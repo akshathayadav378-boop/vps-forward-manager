@@ -52,7 +52,7 @@ https://github.com/akshathayadav378-boop/vps-forward-manager
 - Arch Linux
 - OpenWrt
 
-- ## 快速部署
+-## 快速部署
 
 ### Debian / Ubuntu
 
@@ -63,7 +63,9 @@ cd /root
 rm -f install.sh
 curl -L -o install.sh https://raw.githubusercontent.com/akshathayadav378-boop/vps-forward-manager/main/install.sh
 chmod +x install.sh
-./install.sh
+cp install.sh /usr/local/bin/vfm
+chmod +x /usr/local/bin/vfm
+vfm
 ```
 
 ### Alpine
@@ -74,9 +76,23 @@ cd /root
 rm -f install.sh
 curl -L -o install.sh https://raw.githubusercontent.com/akshathayadav378-boop/vps-forward-manager/main/install.sh
 chmod +x install.sh
-./install.sh
+cp install.sh /usr/local/bin/vfm
+chmod +x /usr/local/bin/vfm
+vfm
 ```
 
 ---
 
+## 快捷命令
 
+首次部署完成后，脚本会被保存为：
+
+```text
+/usr/local/bin/vfm
+```
+
+之后可以直接输入：
+
+```sh
+vfm
+```
