@@ -1,6 +1,11 @@
 #!/bin/sh
 set -e
 
+RED="$(printf '\033[31m')"
+RESET="$(printf '\033[0m')"
+printf "%s" "$RED"
+trap 'printf "%s" "$RESET"' EXIT INT TERM
+
 REALM_BIN="/usr/local/bin/realm"
 REALM_DIR="/etc/realm"
 REALM_CONF="/etc/realm/config.toml"
@@ -17,6 +22,8 @@ DNS_REFRESH_SCRIPT="/usr/local/bin/realm-dns-refresh.sh"
 NFT_APPLY_SCRIPT="/usr/local/bin/realm-nft-apply.sh"
 NFT_SYSTEMD_SERVICE="/etc/systemd/system/realm-nft-forward.service"
 NFT_OPENRC_SERVICE="/etc/init.d/realm-nft-forward"
+
+SHORTCUT_BIN="/usr/local/bin/vfm"
 
 CRON_BEGIN="# BEGIN VPS FORWARD MANAGER DNS REFRESH"
 CRON_END="# END VPS FORWARD MANAGER DNS REFRESH"
@@ -47,8 +54,14 @@ read_input() {
     PROMPT_TEXT="$1"
     VAR_NAME="$2"
 
-    printf "%s" "$PROMPT_TEXT" > /dev/tty
-    IFS= read -r INPUT_VALUE < /dev/tty
+    if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+        printf "%s" "$PROMPT_TEXT" > /dev/tty
+        IFS= read -r INPUT_VALUE < /dev/tty
+    else
+        printf "%s" "$PROMPT_TEXT"
+        IFS= read -r INPUT_VALUE
+    fi
+
     eval "$VAR_NAME=\$INPUT_VALUE"
 }
 
@@ -61,6 +74,9 @@ confirm_input() {
     case "$CONFIRM_VALUE" in
         y|Y|yes|YES)
             eval "$RESULT_VAR=yes"
+            ;;
+        0)
+            eval "$RESULT_VAR=back"
             ;;
         *)
             eval "$RESULT_VAR=no"
@@ -236,12 +252,28 @@ detect_arch() {
     esac
 }
 
+install_shortcut() {
+    SCRIPT_PATH="$0"
+
+    case "$SCRIPT_PATH" in
+        "$SHORTCUT_BIN")
+            return
+            ;;
+    esac
+
+    if [ -f "$SCRIPT_PATH" ]; then
+        cp "$SCRIPT_PATH" "$SHORTCUT_BIN" >/dev/null 2>&1 || true
+        chmod +x "$SHORTCUT_BIN" >/dev/null 2>&1 || true
+    fi
+}
+
 show_system_info() {
     echo ""
     echo "[2/10] 当前系统信息"
     echo "系统类型       ：$OS_FAMILY"
     echo "服务管理器     ：$SERVICE_MANAGER"
     echo "CPU 架构       ：$(uname -m)"
+    echo "快捷命令       ：vfm"
     echo ""
 }
 
@@ -283,16 +315,6 @@ is_ip_address() {
     return 1
 }
 
-is_domain_name() {
-    HOST="$1"
-
-    if is_ip_address "$HOST"; then
-        return 1
-    fi
-
-    return 0
-}
-
 format_remote_addr() {
     HOST="$1"
     PORT="$2"
@@ -318,9 +340,10 @@ ask_action() {
     echo "2) 查看目前转发规则"
     echo "3) 删除转发规则"
     echo "4) 卸载脚本安装的全部内容"
+    echo "0) 退出脚本"
     echo ""
 
-    read_input "请输入选项 [1/2/3/4]: " ACTION_CHOICE
+    read_input "请输入选项 [0/1/2/3/4]: " ACTION_CHOICE
 
     case "$ACTION_CHOICE" in
         1)
@@ -335,11 +358,18 @@ ask_action() {
         4)
             ACTION="uninstall"
             ;;
+        0)
+            echo "已退出脚本。"
+            exit 0
+            ;;
         *)
             echo "错误：无效选项。"
-            exit 1
+            ACTION=""
+            return 1
             ;;
     esac
+
+    return 0
 }
 
 ask_mode() {
@@ -348,9 +378,10 @@ ask_mode() {
     echo ""
     echo "1) realm    - 用户态转发，支持域名 / IP，适合动态域名"
     echo "2) nftables - 内核级 DNAT/SNAT，性能更好，目标必须是固定 IPv4"
+    echo "0) 返回上一步"
     echo ""
 
-    read_input "请输入选项 [1/2]: " MODE_CHOICE
+    read_input "请输入选项 [0/1/2]: " MODE_CHOICE
 
     case "$MODE_CHOICE" in
         1)
@@ -359,13 +390,19 @@ ask_mode() {
         2)
             MODE="nftables"
             ;;
+        0)
+            MODE=""
+            return 1
+            ;;
         *)
             echo "错误：无效选项。"
-            exit 1
+            MODE=""
+            return 1
             ;;
     esac
 
     echo "已选择：$MODE"
+    return 0
 }
 
 check_duplicate_rule_in_file() {
@@ -388,146 +425,237 @@ check_duplicate_rule() {
 
     if check_duplicate_rule_in_file "$REALM_RULES" "$RULE_PROTO" "$RULE_PORT"; then
         echo "错误：已存在 ${RULE_PROTO} 协议监听端口 ${RULE_PORT} 的 realm 规则。"
-        exit 1
+        return 1
     fi
 
     if check_duplicate_rule_in_file "$NFT_RULES" "$RULE_PROTO" "$RULE_PORT"; then
         echo "错误：已存在 ${RULE_PROTO} 协议监听端口 ${RULE_PORT} 的 nftables 规则。"
-        exit 1
+        return 1
     fi
+
+    return 0
 }
 
 check_duplicate_for_new_rule() {
     if [ "$PROTO" = "tcp" ]; then
-        check_duplicate_rule "tcp" "$LISTEN_PORT"
+        check_duplicate_rule "tcp" "$LISTEN_PORT" || return 1
     elif [ "$PROTO" = "udp" ]; then
-        check_duplicate_rule "udp" "$LISTEN_PORT"
+        check_duplicate_rule "udp" "$LISTEN_PORT" || return 1
     else
-        check_duplicate_rule "tcp" "$LISTEN_PORT"
-        check_duplicate_rule "udp" "$LISTEN_PORT"
+        check_duplicate_rule "tcp" "$LISTEN_PORT" || return 1
+        check_duplicate_rule "udp" "$LISTEN_PORT" || return 1
     fi
+
+    return 0
 }
 
 ask_forward_config() {
-    echo ""
-    echo "[5/10] 配置转发信息"
-    echo ""
+    STEP=1
 
-    read_input "第一步 - 请输入本机监听端口: " LISTEN_PORT
+    while true; do
+        case "$STEP" in
+            1)
+                echo ""
+                echo "[5/10] 配置转发信息"
+                echo ""
+                read_input "第一步 - 请输入本机监听端口，输入 0 返回上一步: " LISTEN_PORT
 
-    if ! is_valid_port "$LISTEN_PORT"; then
-        echo "错误：监听端口必须是 1 到 65535 之间的数字。"
-        exit 1
-    fi
+                if [ "$LISTEN_PORT" = "0" ]; then
+                    return 1
+                fi
 
-    read_input "第二步 - 请输入目标域名或 IP: " REMOTE_HOST
+                if ! is_valid_port "$LISTEN_PORT"; then
+                    echo "错误：监听端口必须是 1 到 65535 之间的数字。"
+                    continue
+                fi
 
-    if [ -z "$REMOTE_HOST" ]; then
-        echo "错误：目标域名或 IP 不能为空。"
-        exit 1
-    fi
+                STEP=2
+                ;;
 
-    read_input "第三步 - 请输入目标端口: " REMOTE_PORT
+            2)
+                read_input "第二步 - 请输入目标域名或 IP，输入 0 返回上一步: " REMOTE_HOST
 
-    if ! is_valid_port "$REMOTE_PORT"; then
-        echo "错误：目标端口必须是 1 到 65535 之间的数字。"
-        exit 1
-    fi
+                if [ "$REMOTE_HOST" = "0" ]; then
+                    STEP=1
+                    continue
+                fi
 
-    echo ""
-    echo "请选择协议："
-    echo "1) TCP"
-    echo "2) UDP"
-    echo "3) TCP + UDP"
+                if [ -z "$REMOTE_HOST" ]; then
+                    echo "错误：目标域名或 IP 不能为空。"
+                    continue
+                fi
 
-    read_input "请输入选项 [1/2/3，默认 1]: " PROTO_CHOICE
+                STEP=3
+                ;;
 
-    case "$PROTO_CHOICE" in
-        ""|1)
-            PROTO="tcp"
-            ;;
-        2)
-            PROTO="udp"
-            ;;
-        3)
-            PROTO="both"
-            ;;
-        *)
-            echo "错误：无效协议选项。"
-            exit 1
-            ;;
-    esac
+            3)
+                read_input "第三步 - 请输入目标端口，输入 0 返回上一步: " REMOTE_PORT
 
-    format_remote_addr "$REMOTE_HOST" "$REMOTE_PORT"
+                if [ "$REMOTE_PORT" = "0" ]; then
+                    STEP=2
+                    continue
+                fi
 
-    if [ "$MODE" = "nftables" ]; then
-        if ! is_ipv4 "$REMOTE_HOST"; then
-            echo ""
-            echo "错误：当前脚本的 nftables 模式仅支持目标为固定 IPv4。"
-            echo "原因：nftables DNAT 规则应使用固定 IP，不适合直接使用动态域名。"
-            echo "如果你的目标是域名或 IPv6，请选择 realm 模式。"
-            exit 1
-        fi
-    fi
+                if ! is_valid_port "$REMOTE_PORT"; then
+                    echo "错误：目标端口必须是 1 到 65535 之间的数字。"
+                    continue
+                fi
 
-    check_duplicate_for_new_rule
+                STEP=4
+                ;;
 
-    if [ "$MODE" = "realm" ]; then
-        if is_ip_address "$REMOTE_HOST"; then
-            ENABLE_DNS_REFRESH="no"
-            echo ""
-            echo "检测到目标是 IP 地址，将跳过 DNS 定时刷新。"
-        else
-            echo ""
-            echo "检测到目标像是域名。"
-            read_input "是否启用 DNS 自动刷新？域名 IP 变化时自动重启 realm [y/N]: " DNS_CONFIRM
+            4)
+                echo ""
+                echo "请选择协议："
+                echo "1) TCP"
+                echo "2) UDP"
+                echo "3) TCP + UDP"
+                echo "0) 返回上一步"
+                echo ""
 
-            case "$DNS_CONFIRM" in
-                y|Y|yes|YES)
-                    ENABLE_DNS_REFRESH="yes"
-                    read_input "请输入 DNS 刷新间隔分钟数 [默认 10]: " DNS_REFRESH_INTERVAL_INPUT
+                read_input "请输入选项 [0/1/2/3，默认 1]: " PROTO_CHOICE
 
-                    if [ -n "$DNS_REFRESH_INTERVAL_INPUT" ]; then
-                        DNS_REFRESH_INTERVAL="$DNS_REFRESH_INTERVAL_INPUT"
+                case "$PROTO_CHOICE" in
+                    ""|1)
+                        PROTO="tcp"
+                        ;;
+                    2)
+                        PROTO="udp"
+                        ;;
+                    3)
+                        PROTO="both"
+                        ;;
+                    0)
+                        STEP=3
+                        continue
+                        ;;
+                    *)
+                        echo "错误：无效协议选项。"
+                        continue
+                        ;;
+                esac
+
+                format_remote_addr "$REMOTE_HOST" "$REMOTE_PORT"
+
+                if [ "$MODE" = "nftables" ]; then
+                    if ! is_ipv4 "$REMOTE_HOST"; then
+                        echo ""
+                        echo "错误：当前脚本的 nftables 模式仅支持目标为固定 IPv4。"
+                        echo "原因：nftables DNAT 规则应使用固定 IP，不适合直接使用动态域名。"
+                        echo "如果你的目标是域名或 IPv6，请选择 realm 模式。"
+                        STEP=2
+                        continue
                     fi
+                fi
 
-                    case "$DNS_REFRESH_INTERVAL" in
-                        ''|*[!0-9]*)
-                            echo "错误：DNS 刷新间隔必须是数字。"
-                            exit 1
-                            ;;
-                    esac
+                if ! check_duplicate_for_new_rule; then
+                    STEP=1
+                    continue
+                fi
 
-                    if [ "$DNS_REFRESH_INTERVAL" -lt 1 ]; then
-                        echo "错误：DNS 刷新间隔不能小于 1 分钟。"
-                        exit 1
+                STEP=5
+                ;;
+
+            5)
+                ENABLE_DNS_REFRESH="no"
+
+                if [ "$MODE" = "realm" ]; then
+                    if is_ip_address "$REMOTE_HOST"; then
+                        ENABLE_DNS_REFRESH="no"
+                        echo ""
+                        echo "检测到目标是 IP 地址，将跳过 DNS 定时刷新。"
+                    else
+                        echo ""
+                        echo "检测到目标像是域名。"
+                        echo "是否启用 DNS 自动刷新？域名 IP 变化时自动重启 realm"
+                        echo "y) 启用"
+                        echo "N) 不启用"
+                        echo "0) 返回上一步"
+                        echo ""
+
+                        read_input "请输入选项 [y/N/0]: " DNS_CONFIRM
+
+                        case "$DNS_CONFIRM" in
+                            y|Y|yes|YES)
+                                ENABLE_DNS_REFRESH="yes"
+
+                                while true; do
+                                    read_input "请输入 DNS 刷新间隔分钟数 [默认 10，输入 0 返回上一步]: " DNS_REFRESH_INTERVAL_INPUT
+
+                                    if [ "$DNS_REFRESH_INTERVAL_INPUT" = "0" ]; then
+                                        STEP=4
+                                        continue 2
+                                    fi
+
+                                    if [ -n "$DNS_REFRESH_INTERVAL_INPUT" ]; then
+                                        DNS_REFRESH_INTERVAL="$DNS_REFRESH_INTERVAL_INPUT"
+                                    fi
+
+                                    case "$DNS_REFRESH_INTERVAL" in
+                                        ''|*[!0-9]*)
+                                            echo "错误：DNS 刷新间隔必须是数字。"
+                                            continue
+                                            ;;
+                                    esac
+
+                                    if [ "$DNS_REFRESH_INTERVAL" -lt 1 ]; then
+                                        echo "错误：DNS 刷新间隔不能小于 1 分钟。"
+                                        continue
+                                    fi
+
+                                    break
+                                done
+                                ;;
+                            0)
+                                STEP=4
+                                continue
+                                ;;
+                            *)
+                                ENABLE_DNS_REFRESH="no"
+                                ;;
+                        esac
                     fi
-                    ;;
-                *)
-                    ENABLE_DNS_REFRESH="no"
-                    ;;
-            esac
-        fi
-    fi
+                fi
 
-    echo ""
-    echo "请确认转发配置："
-    echo "转发方式 ：$MODE"
-    echo "监听地址 ：0.0.0.0:${LISTEN_PORT}"
-    echo "目标地址 ：${REMOTE_ADDR}"
-    echo "协议     ：${PROTO}"
+                STEP=6
+                ;;
 
-    if [ "$MODE" = "realm" ]; then
-        echo "DNS 刷新 ：${ENABLE_DNS_REFRESH}"
-    fi
+            6)
+                echo ""
+                echo "请确认转发配置："
+                echo "转发方式 ：$MODE"
+                echo "监听地址 ：0.0.0.0:${LISTEN_PORT}"
+                echo "目标地址 ：${REMOTE_ADDR}"
+                echo "协议     ：${PROTO}"
 
-    echo ""
-    confirm_input "确认继续安装？[y/N]: " CONFIRM
+                if [ "$MODE" = "realm" ]; then
+                    echo "DNS 刷新 ：${ENABLE_DNS_REFRESH}"
+                fi
 
-    if [ "$CONFIRM" != "yes" ]; then
-        echo "已取消安装。"
-        exit 0
-    fi
+                echo ""
+                echo "y) 确认安装"
+                echo "N) 取消本次新建"
+                echo "0) 返回上一步"
+                echo ""
+
+                read_input "请输入选项 [y/N/0]: " CONFIRM
+
+                case "$CONFIRM" in
+                    y|Y|yes|YES)
+                        return 0
+                        ;;
+                    0)
+                        STEP=5
+                        continue
+                        ;;
+                    *)
+                        echo "已取消本次新建。"
+                        return 1
+                        ;;
+                esac
+                ;;
+        esac
+    done
 }
 
 stop_realm_service() {
@@ -1129,9 +1257,10 @@ select_rule_file() {
     echo "请选择规则类型："
     echo "1) realm"
     echo "2) nftables"
+    echo "0) 返回上一步"
     echo ""
 
-    read_input "请输入选项 [1/2]: " RULE_TYPE
+    read_input "请输入选项 [0/1/2]: " RULE_TYPE
 
     case "$RULE_TYPE" in
         1)
@@ -1141,6 +1270,9 @@ select_rule_file() {
         2)
             SELECTED_RULE_FILE="$NFT_RULES"
             SELECTED_RULE_NAME="nftables"
+            ;;
+        0)
+            return 1
             ;;
         *)
             echo "错误：无效选项。"
@@ -1165,7 +1297,11 @@ view_single_rule() {
     print_rule_file_numbered "$SELECTED_RULE_FILE"
     echo ""
 
-    read_input "请输入要查看的规则编号: " RULE_ID
+    read_input "请输入要查看的规则编号，输入 0 返回上一步: " RULE_ID
+
+    if [ "$RULE_ID" = "0" ]; then
+        return
+    fi
 
     case "$RULE_ID" in
         ''|*[!0-9]*)
@@ -1198,27 +1334,31 @@ view_single_rule() {
 }
 
 view_current_rules() {
-    echo ""
-    echo "请选择查看方式："
-    echo "1) 查看全部规则"
-    echo "2) 按编号查看单条规则"
-    echo ""
+    while true; do
+        echo ""
+        echo "请选择查看方式："
+        echo "1) 查看全部规则"
+        echo "2) 按编号查看单条规则"
+        echo "0) 返回上一步"
+        echo ""
 
-    read_input "请输入选项 [1/2]: " VIEW_CHOICE
+        read_input "请输入选项 [0/1/2]: " VIEW_CHOICE
 
-    case "$VIEW_CHOICE" in
-        1)
-            view_all_rules
-            ;;
-        2)
-            view_single_rule
-            ;;
-        *)
-            echo "错误：无效选项。"
-            ;;
-    esac
-
-    exit 0
+        case "$VIEW_CHOICE" in
+            1)
+                view_all_rules
+                ;;
+            2)
+                view_single_rule
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                echo "错误：无效选项。"
+                ;;
+        esac
+    done
 }
 
 delete_rule_by_number() {
@@ -1235,7 +1375,11 @@ delete_rule_by_number() {
     print_rule_file_numbered "$SELECTED_RULE_FILE"
     echo ""
 
-    read_input "请输入要删除的规则编号: " DELETE_ID
+    read_input "请输入要删除的规则编号，输入 0 返回上一步: " DELETE_ID
+
+    if [ "$DELETE_ID" = "0" ]; then
+        return
+    fi
 
     case "$DELETE_ID" in
         ''|*[!0-9]*)
@@ -1258,7 +1402,11 @@ delete_rule_by_number() {
     echo "$RULE_LINE"
     echo ""
 
-    confirm_input "确认删除？[y/N]: " CONFIRM_DELETE
+    confirm_input "确认删除？[y/N/0返回]: " CONFIRM_DELETE
+
+    if [ "$CONFIRM_DELETE" = "back" ]; then
+        return
+    fi
 
     if [ "$CONFIRM_DELETE" != "yes" ]; then
         echo "已取消删除。"
@@ -1299,7 +1447,11 @@ delete_all_rules() {
     echo "即将删除全部 realm 和 nftables 转发规则。"
     echo ""
 
-    confirm_input "确认删除全部规则？[y/N]: " CONFIRM_DELETE_ALL
+    confirm_input "确认删除全部规则？[y/N/0返回]: " CONFIRM_DELETE_ALL
+
+    if [ "$CONFIRM_DELETE_ALL" = "back" ]; then
+        return
+    fi
 
     if [ "$CONFIRM_DELETE_ALL" != "yes" ]; then
         echo "已取消删除。"
@@ -1322,27 +1474,31 @@ delete_all_rules() {
 }
 
 delete_current_rules() {
-    echo ""
-    echo "请选择删除方式："
-    echo "1) 按编号删除单条规则"
-    echo "2) 删除全部规则"
-    echo ""
+    while true; do
+        echo ""
+        echo "请选择删除方式："
+        echo "1) 按编号删除单条规则"
+        echo "2) 删除全部规则"
+        echo "0) 返回上一步"
+        echo ""
 
-    read_input "请输入选项 [1/2]: " DELETE_CHOICE
+        read_input "请输入选项 [0/1/2]: " DELETE_CHOICE
 
-    case "$DELETE_CHOICE" in
-        1)
-            delete_rule_by_number
-            ;;
-        2)
-            delete_all_rules
-            ;;
-        *)
-            echo "错误：无效选项。"
-            ;;
-    esac
-
-    exit 0
+        case "$DELETE_CHOICE" in
+            1)
+                delete_rule_by_number
+                ;;
+            2)
+                delete_all_rules
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                echo "错误：无效选项。"
+                ;;
+        esac
+    done
 }
 
 uninstall_all() {
@@ -1360,15 +1516,20 @@ uninstall_all() {
     echo "6. nftables realm_forward 表"
     echo "7. nftables 规则文件"
     echo "8. nftables 应用脚本"
+    echo "9. 快捷命令 vfm"
     echo ""
     echo "注意：不会卸载系统依赖包，例如 curl、nftables、cron、iproute2。"
     echo ""
 
-    confirm_input "确认卸载全部内容？[y/N]: " CONFIRM_UNINSTALL
+    confirm_input "确认卸载全部内容？[y/N/0返回]: " CONFIRM_UNINSTALL
+
+    if [ "$CONFIRM_UNINSTALL" = "back" ]; then
+        return 0
+    fi
 
     if [ "$CONFIRM_UNINSTALL" != "yes" ]; then
         echo "已取消卸载。"
-        exit 0
+        return 0
     fi
 
     stop_realm_service
@@ -1395,6 +1556,8 @@ uninstall_all() {
         nft delete table ip realm_forward >/dev/null 2>&1 || true
     fi
 
+    rm -f "$SHORTCUT_BIN"
+
     echo ""
     echo "卸载完成。"
     echo ""
@@ -1406,6 +1569,7 @@ uninstall_all() {
     echo "- nftables 转发服务"
     echo "- nftables realm_forward 表"
     echo "- nftables 应用脚本"
+    echo "- 快捷命令 vfm"
     echo ""
     echo "未删除系统依赖包。"
     echo ""
@@ -1479,39 +1643,47 @@ show_result() {
     echo "2. 如果系统防火墙拦截流量，也需要放行端口 ${LISTEN_PORT}。"
     echo "3. nftables 模式不会显示 LISTEN 监听，因为它不是进程监听，而是内核 NAT 转发。"
     echo "4. nftables 模式仅支持目标为固定 IPv4。"
+    echo "5. 以后可以直接输入 vfm 打开本脚本。"
     echo ""
 }
 
 detect_os
 install_base_deps
 detect_arch
+install_shortcut
 show_system_info
-ask_action
 
-case "$ACTION" in
-    create)
-        ask_mode
-        ask_forward_config
+while true; do
+    ask_action || continue
 
-        if [ "$MODE" = "realm" ]; then
-            install_realm_mode
-        else
-            install_nftables_mode
-        fi
+    case "$ACTION" in
+        create)
+            while true; do
+                ask_mode || break
+                ask_forward_config || continue
 
-        show_result
-        ;;
-    view)
-        view_current_rules
-        ;;
-    delete)
-        delete_current_rules
-        ;;
-    uninstall)
-        uninstall_all
-        ;;
-    *)
-        echo "错误：未知操作。"
-        exit 1
-        ;;
-esac
+                if [ "$MODE" = "realm" ]; then
+                    install_realm_mode
+                else
+                    install_nftables_mode
+                fi
+
+                show_result
+                break
+            done
+            ;;
+        view)
+            view_current_rules
+            ;;
+        delete)
+            delete_current_rules
+            ;;
+        uninstall)
+            uninstall_all
+            ;;
+        *)
+            echo "错误：未知操作。"
+            ;;
+    esac
+
+done
