@@ -24,7 +24,7 @@ curl -L -o /usr/local/bin/vfm https://raw.githubusercontent.com/akshathayadav378
 
 
 
-### Debian / Ubuntu
+### Debian / Ubuntu 未安装curl
 
 ```sh
 apt-get update
@@ -38,7 +38,7 @@ chmod +x /usr/local/bin/vfm
 vfm
 ```
 
-### Alpine
+### Alpine 未安装curl
 
 ```sh
 apk add --no-cache curl
