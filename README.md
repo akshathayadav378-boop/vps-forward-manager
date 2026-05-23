@@ -24,6 +24,7 @@ https://github.com/akshathayadav378-boop/vps-forward-manager
 apt-get update
 apt-get install -y curl
 curl -L https://raw.githubusercontent.com/akshathayadav378-boop/vps-forward-manager/main/install.sh | sh
+```
 
 ### Alpine
 
@@ -31,6 +32,8 @@ curl -L https://raw.githubusercontent.com/akshathayadav378-boop/vps-forward-mana
 apk add --no-cache curl
 curl -L https://raw.githubusercontent.com/akshathayadav378-boop/vps-forward-manager/main/install.sh | sh
 ```
+
+---
 
 
 ## 功能特点
