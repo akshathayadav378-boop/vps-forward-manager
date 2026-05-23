@@ -17,7 +17,7 @@ https://github.com/akshathayadav378-boop/vps-forward-manager
 ---
 
 ## 快速部署
-已安装curl
+### 已安装curl
 ```sh
 curl -L -o /usr/local/bin/vfm https://raw.githubusercontent.com/akshathayadav378-boop/vps-forward-manager/main/install.sh && chmod +x /usr/local/bin/vfm && vfm
 ```
