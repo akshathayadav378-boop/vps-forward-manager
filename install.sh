@@ -38,6 +38,7 @@ PROTO="tcp"
 ENABLE_DNS_REFRESH="no"
 DNS_REFRESH_INTERVAL="5"
 SERVICE_TARGET=""
+VFM_FORWARD_COMMENT="VFM_NFT_FORWARD"
 
 print_line() {
     echo "======================================"
@@ -148,7 +149,9 @@ install_base_deps() {
                 iproute2 \
                 procps \
                 grep \
-                coreutils >/dev/null 2>&1
+                coreutils \
+                iptables \
+                netcat-openbsd >/dev/null 2>&1
             ;;
         alpine)
             apk update >/dev/null 2>&1 || true
@@ -161,7 +164,9 @@ install_base_deps() {
                 grep \
                 gawk \
                 coreutils \
-                openrc >/dev/null 2>&1
+                openrc \
+                iptables \
+                netcat-openbsd >/dev/null 2>&1
             ;;
     esac
 }
@@ -317,6 +322,213 @@ format_remote_addr() {
     else
         REMOTE_ADDR="${HOST}:${PORT}"
     fi
+}
+
+cleanup_vfm_forward_rules() {
+    if ! command -v iptables >/dev/null 2>&1; then
+        return 0
+    fi
+
+    while true; do
+        RULE_NUM="$(iptables -L FORWARD -n -v --line-numbers 2>/dev/null | awk '/VFM_NFT_FORWARD/ {print $1; exit}')"
+
+        if [ -z "$RULE_NUM" ]; then
+            break
+        fi
+
+        iptables -D FORWARD "$RULE_NUM" >/dev/null 2>&1 || break
+    done
+
+    return 0
+}
+
+install_test_deps() {
+    if command -v nc >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo "正在安装连通性测试工具 netcat-openbsd..."
+
+    case "$OS_FAMILY" in
+        debian)
+            DEBIAN_FRONTEND=noninteractive apt-get install -y netcat-openbsd >/dev/null 2>&1 || true
+            ;;
+        alpine)
+            apk add --no-cache netcat-openbsd >/dev/null 2>&1 || true
+            ;;
+    esac
+
+    return 0
+}
+
+resolve_target_host() {
+    TARGET_HOST="$1"
+
+    if is_ip_address "$TARGET_HOST"; then
+        echo "$TARGET_HOST"
+        return 0
+    fi
+
+    if command -v getent >/dev/null 2>&1; then
+        getent hosts "$TARGET_HOST" 2>/dev/null | awk '{print $1}' | head -n 1
+        return 0
+    fi
+
+    if command -v nslookup >/dev/null 2>&1; then
+        nslookup "$TARGET_HOST" 2>/dev/null | awk '/^Address: / {print $2}' | tail -n 1
+        return 0
+    fi
+
+    return 0
+}
+
+test_target_port() {
+    TEST_PROTO="$1"
+    TEST_HOST="$2"
+    TEST_PORT="$3"
+
+    if ! command -v nc >/dev/null 2>&1; then
+        echo "未检测到 nc，已跳过目标端口连通性测试。"
+        return 0
+    fi
+
+    case "$TEST_PROTO" in
+        udp)
+            if nc -vzu -w 5 "$TEST_HOST" "$TEST_PORT" >/dev/null 2>&1; then
+                echo "目标 UDP 端口测试：可达"
+            else
+                echo "目标 UDP 端口测试：未确认可达"
+                echo "提示：UDP 的 nc 测试不一定准确，最终以客户端实际连接为准。"
+            fi
+            ;;
+        both)
+            if nc -vz -w 5 "$TEST_HOST" "$TEST_PORT" >/dev/null 2>&1; then
+                echo "目标 TCP 端口测试：可达"
+            else
+                echo "目标 TCP 端口测试：失败或超时"
+            fi
+
+            if nc -vzu -w 5 "$TEST_HOST" "$TEST_PORT" >/dev/null 2>&1; then
+                echo "目标 UDP 端口测试：可达"
+            else
+                echo "目标 UDP 端口测试：未确认可达"
+                echo "提示：UDP 的 nc 测试不一定准确，最终以客户端实际连接为准。"
+            fi
+            ;;
+        *)
+            if nc -vz -w 5 "$TEST_HOST" "$TEST_PORT" >/dev/null 2>&1; then
+                echo "目标 TCP 端口测试：可达"
+            else
+                echo "目标 TCP 端口测试：失败或超时"
+            fi
+            ;;
+    esac
+
+    return 0
+}
+
+test_realm_forward() {
+    echo ""
+    print_line
+    echo " realm 转发连通性测试"
+    print_line
+
+    echo "realm 服务状态：$(get_service_status realm)"
+
+    if [ "$PROTO" = "udp" ]; then
+        if ss -lnup 2>/dev/null | grep -q ":${LISTEN_PORT} "; then
+            echo "本机 UDP 监听测试：已监听 0.0.0.0:${LISTEN_PORT}"
+        else
+            echo "本机 UDP 监听测试：未检测到监听，请检查 realm 服务。"
+        fi
+    elif [ "$PROTO" = "both" ]; then
+        if ss -lntp 2>/dev/null | grep -q ":${LISTEN_PORT} "; then
+            echo "本机 TCP 监听测试：已监听 0.0.0.0:${LISTEN_PORT}"
+        else
+            echo "本机 TCP 监听测试：未检测到监听，请检查 realm 服务。"
+        fi
+
+        if ss -lnup 2>/dev/null | grep -q ":${LISTEN_PORT} "; then
+            echo "本机 UDP 监听测试：已监听 0.0.0.0:${LISTEN_PORT}"
+        else
+            echo "本机 UDP 监听测试：未检测到监听，请检查 realm 服务。"
+        fi
+    else
+        if ss -lntp 2>/dev/null | grep -q ":${LISTEN_PORT} "; then
+            echo "本机 TCP 监听测试：已监听 0.0.0.0:${LISTEN_PORT}"
+        else
+            echo "本机 TCP 监听测试：未检测到监听，请检查 realm 服务。"
+        fi
+    fi
+
+    RESOLVED_IP="$(resolve_target_host "$REMOTE_HOST")"
+    if [ -n "$RESOLVED_IP" ]; then
+        echo "目标解析结果：${REMOTE_HOST} -> ${RESOLVED_IP}"
+    else
+        echo "目标解析结果：未解析到 IP，请检查 DNS。"
+    fi
+
+    test_target_port "$PROTO" "$REMOTE_HOST" "$REMOTE_PORT"
+
+    echo ""
+    echo "提示：如果本机监听正常，但客户端仍无法连接，请检查云服务器安全组是否放行监听端口 ${LISTEN_PORT}。"
+}
+
+test_nft_forward() {
+    echo ""
+    print_line
+    echo " nftables 转发连通性测试"
+    print_line
+
+    IP_FORWARD_VALUE="$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)"
+    if [ "$IP_FORWARD_VALUE" = "1" ]; then
+        echo "IPv4 转发状态：已开启"
+    else
+        echo "IPv4 转发状态：未开启"
+    fi
+
+    if nft list table ip realm_forward >/dev/null 2>&1; then
+        echo "nftables NAT 表：已存在"
+    else
+        echo "nftables NAT 表：未找到"
+    fi
+
+    if nft list table ip realm_forward 2>/dev/null | grep -q "dport ${LISTEN_PORT} dnat to ${REMOTE_HOST}:${REMOTE_PORT}"; then
+        echo "DNAT 规则检查：已找到监听端口 ${LISTEN_PORT} 的转发规则"
+    else
+        echo "DNAT 规则检查：未确认找到对应规则，请执行 nft list table ip realm_forward 检查。"
+    fi
+
+    if command -v iptables >/dev/null 2>&1; then
+        if iptables -S FORWARD 2>/dev/null | grep -q "VFM_NFT_FORWARD"; then
+            echo "FORWARD 放行规则：已存在 VFM_NFT_FORWARD 标记规则"
+        else
+            echo "FORWARD 放行规则：未检测到 VFM_NFT_FORWARD 标记规则"
+        fi
+    else
+        echo "FORWARD 放行规则：未安装 iptables，无法检查"
+    fi
+
+    test_target_port "$PROTO" "$REMOTE_HOST" "$REMOTE_PORT"
+
+    echo ""
+    echo "提示：nftables 模式不会出现 LISTEN 监听，这是正常现象。"
+    echo "提示：如果测试仍失败，请检查云服务器安全组是否放行监听端口 ${LISTEN_PORT}。"
+}
+
+run_forward_test() {
+    install_test_deps
+
+    case "$MODE" in
+        realm)
+            test_realm_forward
+            ;;
+        nftables)
+            test_nft_forward
+            ;;
+    esac
+
+    return 0
 }
 
 count_rule_file() {
@@ -940,6 +1152,8 @@ stop_nft_service() {
     if command -v nft >/dev/null 2>&1; then
         nft delete table ip realm_forward >/dev/null 2>&1 || true
     fi
+
+    cleanup_vfm_forward_rules
 }
 
 remove_systemd_dns_refresh() {
@@ -1069,10 +1283,59 @@ write_nft_apply_script() {
 set -e
 
 RULES="/etc/realm/rules-nft.conf"
+COMMENT="VFM_NFT_FORWARD"
+
+cleanup_vfm_forward_rules() {
+    if ! command -v iptables >/dev/null 2>&1; then
+        return 0
+    fi
+
+    while true; do
+        RULE_NUM="$(iptables -L FORWARD -n -v --line-numbers 2>/dev/null | awk '/VFM_NFT_FORWARD/ {print $1; exit}')"
+
+        if [ -z "$RULE_NUM" ]; then
+            break
+        fi
+
+        iptables -D FORWARD "$RULE_NUM" >/dev/null 2>&1 || break
+    done
+
+    return 0
+}
+
+apply_vfm_forward_rules() {
+    if ! command -v iptables >/dev/null 2>&1; then
+        echo "警告：未找到 iptables，无法自动添加 FORWARD 放行规则。"
+        return 0
+    fi
+
+    cleanup_vfm_forward_rules
+
+    iptables -I FORWARD 1 -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment "$COMMENT" -j ACCEPT >/dev/null 2>&1 || true
+
+    while IFS='|' read -r RULE_PROTO RULE_LISTEN RULE_HOST RULE_PORT; do
+        [ -z "$RULE_PROTO" ] && continue
+        [ -z "$RULE_LISTEN" ] && continue
+        [ -z "$RULE_HOST" ] && continue
+        [ -z "$RULE_PORT" ] && continue
+
+        case "$RULE_PROTO" in
+            tcp)
+                iptables -I FORWARD 1 -p tcp -d "$RULE_HOST" --dport "$RULE_PORT" -m comment --comment "$COMMENT" -j ACCEPT >/dev/null 2>&1 || true
+                ;;
+            udp)
+                iptables -I FORWARD 1 -p udp -d "$RULE_HOST" --dport "$RULE_PORT" -m comment --comment "$COMMENT" -j ACCEPT >/dev/null 2>&1 || true
+                ;;
+        esac
+    done < "$RULES"
+
+    return 0
+}
 
 if [ ! -f "$RULES" ] || [ ! -s "$RULES" ]; then
     nft delete table ip realm_forward >/dev/null 2>&1 || true
-    echo "没有 nftables 规则，已清理 realm_forward 表。"
+    cleanup_vfm_forward_rules
+    echo "没有 nftables 规则，已清理 realm_forward 表和 FORWARD 放行规则。"
     exit 0
 fi
 
@@ -1091,17 +1354,25 @@ while IFS='|' read -r RULE_PROTO RULE_LISTEN RULE_HOST RULE_PORT; do
         tcp) nft add rule ip realm_forward prerouting tcp dport "$RULE_LISTEN" dnat to "$RULE_HOST:$RULE_PORT" ;;
         udp) nft add rule ip realm_forward prerouting udp dport "$RULE_LISTEN" dnat to "$RULE_HOST:$RULE_PORT" ;;
     esac
+
     nft add rule ip realm_forward postrouting ip daddr "$RULE_HOST" masquerade
 done < "$RULES"
+
+apply_vfm_forward_rules
 EOF
     chmod +x "$NFT_APPLY_SCRIPT"
 }
-
 apply_nft_rules() {
     if [ ! -x "$NFT_APPLY_SCRIPT" ]; then
         write_nft_apply_script
     fi
-    "$NFT_APPLY_SCRIPT" >/dev/null 2>&1
+
+    if ! "$NFT_APPLY_SCRIPT"; then
+        echo "错误：nftables 规则应用失败，请检查上方输出。"
+        return 1
+    fi
+
+    return 0
 }
 
 add_realm_rule() {
@@ -1431,6 +1702,8 @@ delete_all_rules() {
     if command -v nft >/dev/null 2>&1; then
         nft delete table ip realm_forward >/dev/null 2>&1 || true
     fi
+
+    cleanup_vfm_forward_rules
     echo "✅ 全部转发规则已删除。"
 }
 
@@ -1442,9 +1715,9 @@ delete_current_rules() {
         print_line
         echo ""
 
-        local START_IDX=1
-        local REALM_COUNT=0
-        local NFT_COUNT=0
+        START_IDX=1
+        REALM_COUNT=0
+        NFT_COUNT=0
 
         if [ -f "$REALM_RULES" ] && [ -s "$REALM_RULES" ]; then
             REALM_COUNT=$(wc -l < "$REALM_RULES" | tr -d ' ')
@@ -1454,7 +1727,7 @@ delete_current_rules() {
             NFT_COUNT=$(wc -l < "$NFT_RULES" | tr -d ' ')
         fi
 
-        local TOTAL_RULES=$((REALM_COUNT + NFT_COUNT))
+        TOTAL_RULES=$((REALM_COUNT + NFT_COUNT))
 
         echo "【 realm 规则 】"
         echo "--------------------------------------"
@@ -1590,6 +1863,7 @@ uninstall_all() {
         nft delete table ip realm_forward >/dev/null 2>&1 || true
     fi
 
+    cleanup_vfm_forward_rules
     rm -f "$SHORTCUT_BIN"
 
     echo ""
@@ -1648,6 +1922,7 @@ while true; do
                 fi
 
                 show_result
+                run_forward_test
                 break
             done
             ;;
