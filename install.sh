@@ -36,7 +36,7 @@ REMOTE_PORT=""
 REMOTE_ADDR=""
 PROTO="tcp"
 ENABLE_DNS_REFRESH="no"
-DNS_REFRESH_INTERVAL="10"
+DNS_REFRESH_INTERVAL="5"
 
 print_line() {
     echo "======================================"
@@ -268,6 +268,28 @@ is_valid_port() {
     return 0
 }
 
+generate_random_port() {
+    while true; do
+        if command -v od >/dev/null 2>&1; then
+            RAND_NUM="$(od -An -N2 -tu2 /dev/urandom 2>/dev/null | tr -d ' ')"
+        else
+            RAND_NUM="$(date +%s)"
+        fi
+
+        [ -z "$RAND_NUM" ] && RAND_NUM="$(date +%s)"
+
+        RANDOM_PORT=$((2000 + RAND_NUM % 63001))
+
+        if ! check_duplicate_rule_in_file "$REALM_RULES" "tcp" "$RANDOM_PORT" && \
+           ! check_duplicate_rule_in_file "$REALM_RULES" "udp" "$RANDOM_PORT" && \
+           ! check_duplicate_rule_in_file "$NFT_RULES" "tcp" "$RANDOM_PORT" && \
+           ! check_duplicate_rule_in_file "$NFT_RULES" "udp" "$RANDOM_PORT"; then
+            echo "$RANDOM_PORT"
+            return 0
+        fi
+    done
+}
+
 is_ipv4() {
     echo "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
 }
@@ -391,9 +413,13 @@ ask_forward_config() {
                 echo ""
                 echo "[5/10] 配置转发信息"
                 echo "--------------------------------------"
-                read_input "第一步 - 请输入本机监听端口 (输入0返回): " LISTEN_PORT
+                read_input "第一步 - 请输入本机监听端口 (回车默认随机 2000-65000，输入0返回): " LISTEN_PORT
 
                 if [ "$LISTEN_PORT" = "0" ]; then return 1; fi
+                if [ -z "$LISTEN_PORT" ]; then
+                    LISTEN_PORT="$(generate_random_port)"
+                    echo "已随机生成监听端口：$LISTEN_PORT"
+                fi
                 if ! is_valid_port "$LISTEN_PORT"; then
                     echo "错误：监听端口必须是 1 到 65535 之间的数字。"
                     continue
@@ -429,7 +455,7 @@ ask_forward_config() {
                 echo "0) 返回上一步"
                 echo ""
 
-                read_input "请输入选项 [默认1]: " PROTO_CHOICE
+                read_input "请输入选项 [回车默认 TCP]: " PROTO_CHOICE
 
                 case "$PROTO_CHOICE" in
                     ""|1) PROTO="tcp" ;;
@@ -470,18 +496,25 @@ ask_forward_config() {
                         echo ""
                         echo "提示：检测到目标为域名。"
                         echo "是否启用 DNS 自动刷新？(域名 IP 变化时自动重启 realm)"
-                        echo "y) 启用"
-                        echo "N) 不启用"
+                        echo "Y) 启用"
+                        echo "n) 不启用"
                         echo "0) 返回上一步"
                         echo ""
 
-                        read_input "请输入选项 [y/N/0]: " DNS_CONFIRM
+                        read_input "请输入选项 [回车默认启用，Y/n/0]: " DNS_CONFIRM
 
                         case "$DNS_CONFIRM" in
-                            y|Y|yes|YES)
+                            0)
+                                STEP=4
+                                continue
+                                ;;
+                            n|N|no|NO)
+                                ENABLE_DNS_REFRESH="no"
+                                ;;
+                            ""|y|Y|yes|YES|*)
                                 ENABLE_DNS_REFRESH="yes"
                                 while true; do
-                                    read_input "请输入 DNS 刷新间隔分钟数 [默认 10，输入 0 返回]: " DNS_REFRESH_INTERVAL_INPUT
+                                    read_input "请输入 DNS 刷新间隔分钟数 [回车默认 5，输入 0 返回]: " DNS_REFRESH_INTERVAL_INPUT
 
                                     if [ "$DNS_REFRESH_INTERVAL_INPUT" = "0" ]; then STEP=4; continue 2; fi
                                     if [ -n "$DNS_REFRESH_INTERVAL_INPUT" ]; then DNS_REFRESH_INTERVAL="$DNS_REFRESH_INTERVAL_INPUT"; fi
@@ -493,8 +526,6 @@ ask_forward_config() {
                                     break
                                 done
                                 ;;
-                            0) STEP=4; continue ;;
-                            *) ENABLE_DNS_REFRESH="no" ;;
                         esac
                     fi
                 fi
@@ -515,11 +546,11 @@ ask_forward_config() {
                 fi
 
                 echo ""
-                confirm_input "确认安装？[y/N/0返回]: " CONFIRM
-                
-                case "$CONFIRM" in
-                    yes) return 0 ;;
-                    back) STEP=5; continue ;;
+                read_input "确认安装？[回车默认安装，Y/n/0返回]: " CONFIRM_INSTALL
+
+                case "$CONFIRM_INSTALL" in
+                    ""|y|Y|yes|YES) return 0 ;;
+                    0) STEP=5; continue ;;
                     *) echo "已取消本次新建。"; return 1 ;;
                 esac
                 ;;
@@ -1028,7 +1059,7 @@ view_current_rules() {
 
 delete_all_rules() {
     echo ""
-    confirm_input "确认删除全部规则？[y/N/0返回]: " CONFIRM_DELETE_ALL
+    confirm_input "确认删除全部规则？[y/N/0返回，回车默认不删除]: " CONFIRM_DELETE_ALL
 
     if [ "$CONFIRM_DELETE_ALL" != "yes" ]; then
         echo "已取消删除。"
@@ -1134,7 +1165,7 @@ delete_current_rules() {
         echo "协议：$RULE_PROTO | 监听：0.0.0.0:$RULE_LISTEN | 目标：$RULE_HOST:$RULE_PORT"
         echo ""
 
-        confirm_input "确认删除？[y/N/0返回]: " CONFIRM_DELETE
+        confirm_input "确认删除？[y/N/0返回，回车默认不删除]: " CONFIRM_DELETE
 
         if [ "$CONFIRM_DELETE" = "back" ]; then continue; fi
         if [ "$CONFIRM_DELETE" != "yes" ]; then
@@ -1178,7 +1209,7 @@ uninstall_all() {
     echo ""
     echo "注意：仅卸载 realm/配置/定时任务/内部表，不会卸载 curl、nftables 等系统依赖包。"
     echo ""
-    confirm_input "确认卸载全部内容？[y/N/0返回]: " CONFIRM_UNINSTALL
+    confirm_input "确认卸载全部内容？[y/N/0返回，回车默认不卸载]: " CONFIRM_UNINSTALL
 
     if [ "$CONFIRM_UNINSTALL" != "yes" ]; then
         echo "已取消卸载。"
