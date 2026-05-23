@@ -18,8 +18,8 @@ NFT_APPLY_SCRIPT="/usr/local/bin/realm-nft-apply.sh"
 NFT_SYSTEMD_SERVICE="/etc/systemd/system/realm-nft-forward.service"
 NFT_OPENRC_SERVICE="/etc/init.d/realm-nft-forward"
 
-CRON_BEGIN="# BEGIN REALM DNS REFRESH"
-CRON_END="# END REALM DNS REFRESH"
+CRON_BEGIN="# BEGIN VPS FORWARD MANAGER DNS REFRESH"
+CRON_END="# END VPS FORWARD MANAGER DNS REFRESH"
 
 OS_FAMILY=""
 SERVICE_MANAGER=""
@@ -36,11 +36,43 @@ PROTO="tcp"
 ENABLE_DNS_REFRESH="no"
 DNS_REFRESH_INTERVAL="10"
 
-echo "======================================"
-echo " 端口转发一键管理脚本"
+SELECTED_RULE_FILE=""
+SELECTED_RULE_NAME=""
+
+print_line() {
+    echo "======================================"
+}
+
+read_input() {
+    PROMPT_TEXT="$1"
+    VAR_NAME="$2"
+
+    printf "%s" "$PROMPT_TEXT" > /dev/tty
+    IFS= read -r INPUT_VALUE < /dev/tty
+    eval "$VAR_NAME=\$INPUT_VALUE"
+}
+
+confirm_input() {
+    PROMPT_TEXT="$1"
+    RESULT_VAR="$2"
+
+    read_input "$PROMPT_TEXT" CONFIRM_VALUE
+
+    case "$CONFIRM_VALUE" in
+        y|Y|yes|YES)
+            eval "$RESULT_VAR=yes"
+            ;;
+        *)
+            eval "$RESULT_VAR=no"
+            ;;
+    esac
+}
+
+print_line
+echo " VPS 端口转发一键管理脚本"
 echo " 支持系统：Debian / Ubuntu / Alpine"
 echo " 转发方式：realm / nftables"
-echo "======================================"
+print_line
 echo ""
 
 if [ "$(id -u)" != "0" ]; then
@@ -106,7 +138,8 @@ install_base_deps() {
                 ca-certificates \
                 iproute2 \
                 procps \
-                grep
+                grep \
+                coreutils
             ;;
         alpine)
             apk update
@@ -118,6 +151,7 @@ install_base_deps() {
                 procps \
                 grep \
                 gawk \
+                coreutils \
                 openrc
             ;;
     esac
@@ -249,6 +283,16 @@ is_ip_address() {
     return 1
 }
 
+is_domain_name() {
+    HOST="$1"
+
+    if is_ip_address "$HOST"; then
+        return 1
+    fi
+
+    return 0
+}
+
 format_remote_addr() {
     HOST="$1"
     PORT="$2"
@@ -276,8 +320,7 @@ ask_action() {
     echo "4) 卸载脚本安装的全部内容"
     echo ""
 
-    printf "请输入选项 [1/2/3/4]: "
-    read -r ACTION_CHOICE
+    read_input "请输入选项 [1/2/3/4]: " ACTION_CHOICE
 
     case "$ACTION_CHOICE" in
         1)
@@ -307,8 +350,7 @@ ask_mode() {
     echo "2) nftables - 内核级 DNAT/SNAT，性能更好，目标必须是固定 IPv4"
     echo ""
 
-    printf "请输入选项 [1/2]: "
-    read -r MODE_CHOICE
+    read_input "请输入选项 [1/2]: " MODE_CHOICE
 
     case "$MODE_CHOICE" in
         1)
@@ -326,22 +368,32 @@ ask_mode() {
     echo "已选择：$MODE"
 }
 
+check_duplicate_rule_in_file() {
+    RULE_FILE="$1"
+    RULE_PROTO="$2"
+    RULE_PORT="$3"
+
+    if [ -f "$RULE_FILE" ]; then
+        if awk -F'|' -v p="$RULE_PROTO" -v port="$RULE_PORT" '$1 == p && $2 == port {found=1} END {exit !found}' "$RULE_FILE"; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
 check_duplicate_rule() {
     RULE_PROTO="$1"
     RULE_PORT="$2"
 
-    if [ -f "$REALM_RULES" ]; then
-        if awk -F'|' -v p="$RULE_PROTO" -v port="$RULE_PORT" '$1 == p && $2 == port {found=1} END {exit !found}' "$REALM_RULES"; then
-            echo "错误：已存在 ${RULE_PROTO} 协议监听端口 ${RULE_PORT} 的 realm 规则。"
-            exit 1
-        fi
+    if check_duplicate_rule_in_file "$REALM_RULES" "$RULE_PROTO" "$RULE_PORT"; then
+        echo "错误：已存在 ${RULE_PROTO} 协议监听端口 ${RULE_PORT} 的 realm 规则。"
+        exit 1
     fi
 
-    if [ -f "$NFT_RULES" ]; then
-        if awk -F'|' -v p="$RULE_PROTO" -v port="$RULE_PORT" '$1 == p && $2 == port {found=1} END {exit !found}' "$NFT_RULES"; then
-            echo "错误：已存在 ${RULE_PROTO} 协议监听端口 ${RULE_PORT} 的 nftables 规则。"
-            exit 1
-        fi
+    if check_duplicate_rule_in_file "$NFT_RULES" "$RULE_PROTO" "$RULE_PORT"; then
+        echo "错误：已存在 ${RULE_PROTO} 协议监听端口 ${RULE_PORT} 的 nftables 规则。"
+        exit 1
     fi
 }
 
@@ -361,24 +413,21 @@ ask_forward_config() {
     echo "[5/10] 配置转发信息"
     echo ""
 
-    printf "第一步 - 请输入本机监听端口: "
-    read -r LISTEN_PORT
+    read_input "第一步 - 请输入本机监听端口: " LISTEN_PORT
 
     if ! is_valid_port "$LISTEN_PORT"; then
         echo "错误：监听端口必须是 1 到 65535 之间的数字。"
         exit 1
     fi
 
-    printf "第二步 - 请输入目标域名或 IP: "
-    read -r REMOTE_HOST
+    read_input "第二步 - 请输入目标域名或 IP: " REMOTE_HOST
 
     if [ -z "$REMOTE_HOST" ]; then
         echo "错误：目标域名或 IP 不能为空。"
         exit 1
     fi
 
-    printf "第三步 - 请输入目标端口: "
-    read -r REMOTE_PORT
+    read_input "第三步 - 请输入目标端口: " REMOTE_PORT
 
     if ! is_valid_port "$REMOTE_PORT"; then
         echo "错误：目标端口必须是 1 到 65535 之间的数字。"
@@ -390,8 +439,8 @@ ask_forward_config() {
     echo "1) TCP"
     echo "2) UDP"
     echo "3) TCP + UDP"
-    printf "请输入选项 [1/2/3，默认 1]: "
-    read -r PROTO_CHOICE
+
+    read_input "请输入选项 [1/2/3，默认 1]: " PROTO_CHOICE
 
     case "$PROTO_CHOICE" in
         ""|1)
@@ -431,14 +480,12 @@ ask_forward_config() {
         else
             echo ""
             echo "检测到目标像是域名。"
-            printf "是否启用 DNS 自动刷新？域名 IP 变化时自动重启 realm [y/N]: "
-            read -r DNS_CONFIRM
+            read_input "是否启用 DNS 自动刷新？域名 IP 变化时自动重启 realm [y/N]: " DNS_CONFIRM
 
             case "$DNS_CONFIRM" in
                 y|Y|yes|YES)
                     ENABLE_DNS_REFRESH="yes"
-                    printf "请输入 DNS 刷新间隔分钟数 [默认 10]: "
-                    read -r DNS_REFRESH_INTERVAL_INPUT
+                    read_input "请输入 DNS 刷新间隔分钟数 [默认 10]: " DNS_REFRESH_INTERVAL_INPUT
 
                     if [ -n "$DNS_REFRESH_INTERVAL_INPUT" ]; then
                         DNS_REFRESH_INTERVAL="$DNS_REFRESH_INTERVAL_INPUT"
@@ -475,17 +522,12 @@ ask_forward_config() {
     fi
 
     echo ""
-    printf "确认继续安装？[y/N]: "
-    read -r CONFIRM
+    confirm_input "确认继续安装？[y/N]: " CONFIRM
 
-    case "$CONFIRM" in
-        y|Y|yes|YES)
-            ;;
-        *)
-            echo "已取消安装。"
-            exit 0
-            ;;
-    esac
+    if [ "$CONFIRM" != "yes" ]; then
+        echo "已取消安装。"
+        exit 0
+    fi
 }
 
 stop_realm_service() {
@@ -1055,9 +1097,9 @@ print_rule_file_numbered() {
 
 view_all_rules() {
     echo ""
-    echo "======================================"
+    print_line
     echo " 当前全部转发规则"
-    echo "======================================"
+    print_line
     echo ""
 
     echo "一、realm 规则"
@@ -1089,8 +1131,7 @@ select_rule_file() {
     echo "2) nftables"
     echo ""
 
-    printf "请输入选项 [1/2]: "
-    read -r RULE_TYPE
+    read_input "请输入选项 [1/2]: " RULE_TYPE
 
     case "$RULE_TYPE" in
         1)
@@ -1124,8 +1165,7 @@ view_single_rule() {
     print_rule_file_numbered "$SELECTED_RULE_FILE"
     echo ""
 
-    printf "请输入要查看的规则编号: "
-    read -r RULE_ID
+    read_input "请输入要查看的规则编号: " RULE_ID
 
     case "$RULE_ID" in
         ''|*[!0-9]*)
@@ -1164,8 +1204,7 @@ view_current_rules() {
     echo "2) 按编号查看单条规则"
     echo ""
 
-    printf "请输入选项 [1/2]: "
-    read -r VIEW_CHOICE
+    read_input "请输入选项 [1/2]: " VIEW_CHOICE
 
     case "$VIEW_CHOICE" in
         1)
@@ -1196,8 +1235,7 @@ delete_rule_by_number() {
     print_rule_file_numbered "$SELECTED_RULE_FILE"
     echo ""
 
-    printf "请输入要删除的规则编号: "
-    read -r DELETE_ID
+    read_input "请输入要删除的规则编号: " DELETE_ID
 
     case "$DELETE_ID" in
         ''|*[!0-9]*)
@@ -1220,17 +1258,12 @@ delete_rule_by_number() {
     echo "$RULE_LINE"
     echo ""
 
-    printf "确认删除？[y/N]: "
-    read -r CONFIRM_DELETE
+    confirm_input "确认删除？[y/N]: " CONFIRM_DELETE
 
-    case "$CONFIRM_DELETE" in
-        y|Y|yes|YES)
-            ;;
-        *)
-            echo "已取消删除。"
-            return
-            ;;
-    esac
+    if [ "$CONFIRM_DELETE" != "yes" ]; then
+        echo "已取消删除。"
+        return
+    fi
 
     TMP_FILE="$(mktemp)"
     awk -v line="$DELETE_ID" 'NR != line {print}' "$SELECTED_RULE_FILE" > "$TMP_FILE"
@@ -1266,17 +1299,12 @@ delete_all_rules() {
     echo "即将删除全部 realm 和 nftables 转发规则。"
     echo ""
 
-    printf "确认删除全部规则？[y/N]: "
-    read -r CONFIRM_DELETE_ALL
+    confirm_input "确认删除全部规则？[y/N]: " CONFIRM_DELETE_ALL
 
-    case "$CONFIRM_DELETE_ALL" in
-        y|Y|yes|YES)
-            ;;
-        *)
-            echo "已取消删除。"
-            return
-            ;;
-    esac
+    if [ "$CONFIRM_DELETE_ALL" != "yes" ]; then
+        echo "已取消删除。"
+        return
+    fi
 
     stop_realm_service
     stop_nft_service
@@ -1300,8 +1328,7 @@ delete_current_rules() {
     echo "2) 删除全部规则"
     echo ""
 
-    printf "请输入选项 [1/2]: "
-    read -r DELETE_CHOICE
+    read_input "请输入选项 [1/2]: " DELETE_CHOICE
 
     case "$DELETE_CHOICE" in
         1)
@@ -1320,9 +1347,9 @@ delete_current_rules() {
 
 uninstall_all() {
     echo ""
-    echo "======================================"
+    print_line
     echo " 卸载脚本安装的全部内容"
-    echo "======================================"
+    print_line
     echo ""
     echo "即将卸载以下内容："
     echo "1. realm 服务"
@@ -1337,17 +1364,12 @@ uninstall_all() {
     echo "注意：不会卸载系统依赖包，例如 curl、nftables、cron、iproute2。"
     echo ""
 
-    printf "确认卸载全部内容？[y/N]: "
-    read -r CONFIRM_UNINSTALL
+    confirm_input "确认卸载全部内容？[y/N]: " CONFIRM_UNINSTALL
 
-    case "$CONFIRM_UNINSTALL" in
-        y|Y|yes|YES)
-            ;;
-        *)
-            echo "已取消卸载。"
-            exit 0
-            ;;
-    esac
+    if [ "$CONFIRM_UNINSTALL" != "yes" ]; then
+        echo "已取消卸载。"
+        exit 0
+    fi
 
     stop_realm_service
     stop_nft_service
@@ -1395,9 +1417,9 @@ show_result() {
     echo ""
     echo "[10/10] 正在检查安装结果..."
     echo ""
-    echo "======================================"
+    print_line
     echo " 操作完成"
-    echo "======================================"
+    print_line
     echo ""
     echo "转发方式 ：$MODE"
     echo "监听地址 ：0.0.0.0:${LISTEN_PORT}"
