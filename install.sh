@@ -37,6 +37,7 @@ REMOTE_ADDR=""
 PROTO="tcp"
 ENABLE_DNS_REFRESH="no"
 DNS_REFRESH_INTERVAL="5"
+SERVICE_TARGET=""
 
 print_line() {
     echo "======================================"
@@ -318,24 +319,379 @@ format_remote_addr() {
     fi
 }
 
-ask_action() {
+count_rule_file() {
+    RULE_FILE="$1"
+
+    if [ -f "$RULE_FILE" ] && [ -s "$RULE_FILE" ]; then
+        wc -l < "$RULE_FILE" | tr -d ' '
+    else
+        echo "0"
+    fi
+}
+
+get_service_status() {
+    SERVICE_NAME="$1"
+
+    case "$SERVICE_NAME" in
+        realm)
+            SYSTEMD_FILE="$SYSTEMD_SERVICE"
+            OPENRC_FILE="$OPENRC_SERVICE"
+            SERVICE_ID="realm"
+            ;;
+        nftables)
+            SYSTEMD_FILE="$NFT_SYSTEMD_SERVICE"
+            OPENRC_FILE="$NFT_OPENRC_SERVICE"
+            SERVICE_ID="realm-nft-forward"
+            ;;
+        *)
+            echo "未知"
+            return 0
+            ;;
+    esac
+
+    if [ "$SERVICE_MANAGER" = "systemd" ]; then
+        if [ ! -f "$SYSTEMD_FILE" ]; then
+            echo "未安装"
+            return 0
+        fi
+
+        if systemctl is-active --quiet "$SERVICE_ID" >/dev/null 2>&1; then
+            echo "运行中"
+        else
+            echo "已停止"
+        fi
+    else
+        if [ ! -f "$OPENRC_FILE" ]; then
+            echo "未安装"
+            return 0
+        fi
+
+        if rc-service "$SERVICE_ID" status >/dev/null 2>&1; then
+            echo "运行中"
+        else
+            echo "已停止"
+        fi
+    fi
+}
+
+show_main_status() {
+    REALM_STATUS="$(get_service_status realm)"
+    NFT_STATUS="$(get_service_status nftables)"
+    REALM_COUNT="$(count_rule_file "$REALM_RULES")"
+    NFT_COUNT="$(count_rule_file "$NFT_RULES")"
+
     print_line
+    echo " VPS 转发管理器"
+    print_line
+    echo "realm 服务状态      ：$REALM_STATUS"
+    echo "nftables 服务状态   ：$NFT_STATUS"
+    echo "realm 规则数量      ：${REALM_COUNT} 条"
+    echo "nftables 规则数量   ：${NFT_COUNT} 条"
+    echo "快捷命令            ：vfm"
+    print_line
+}
+
+select_service_target() {
+    SERVICE_TARGET=""
+
+    echo ""
+    echo "请选择服务："
+    echo "1) realm 服务"
+    echo "2) nftables 服务"
+    echo "3) realm + nftables 全部服务"
+    echo "0) 返回上一步"
+    echo ""
+
+    read_input "请输入选项 [0-3]: " SERVICE_CHOICE
+
+    case "$SERVICE_CHOICE" in
+        1)
+            SERVICE_TARGET="realm"
+            ;;
+        2)
+            SERVICE_TARGET="nftables"
+            ;;
+        3)
+            SERVICE_TARGET="all"
+            ;;
+        0)
+            return 1
+            ;;
+        *)
+            echo "错误：无效选项。"
+            return 1
+            ;;
+    esac
+
+    return 0
+}
+
+service_file_exists() {
+    SERVICE_NAME="$1"
+
+    case "$SERVICE_NAME" in
+        realm)
+            if [ "$SERVICE_MANAGER" = "systemd" ]; then
+                [ -f "$SYSTEMD_SERVICE" ]
+            else
+                [ -f "$OPENRC_SERVICE" ]
+            fi
+            ;;
+        nftables)
+            if [ "$SERVICE_MANAGER" = "systemd" ]; then
+                [ -f "$NFT_SYSTEMD_SERVICE" ]
+            else
+                [ -f "$NFT_OPENRC_SERVICE" ]
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+start_one_service() {
+    SERVICE_NAME="$1"
+
+    case "$SERVICE_NAME" in
+        realm)
+            SERVICE_ID="realm"
+            SERVICE_LABEL="realm"
+            ;;
+        nftables)
+            SERVICE_ID="realm-nft-forward"
+            SERVICE_LABEL="nftables"
+            ;;
+        *)
+            echo "错误：未知服务。"
+            return 0
+            ;;
+    esac
+
+    if ! service_file_exists "$SERVICE_NAME"; then
+        echo "提示：${SERVICE_LABEL} 服务未安装，请先新建对应转发规则。"
+        return 0
+    fi
+
+    echo "正在开启 ${SERVICE_LABEL} 服务..."
+
+    if [ "$SERVICE_MANAGER" = "systemd" ]; then
+        systemctl enable --now "$SERVICE_ID"
+    else
+        rc-update add "$SERVICE_ID" default >/dev/null 2>&1 || true
+        rc-service "$SERVICE_ID" start
+    fi
+
+    echo "${SERVICE_LABEL} 服务状态：$(get_service_status "$SERVICE_NAME")"
+}
+
+stop_one_service() {
+    SERVICE_NAME="$1"
+
+    case "$SERVICE_NAME" in
+        realm)
+            SERVICE_ID="realm"
+            SERVICE_LABEL="realm"
+            ;;
+        nftables)
+            SERVICE_ID="realm-nft-forward"
+            SERVICE_LABEL="nftables"
+            ;;
+        *)
+            echo "错误：未知服务。"
+            return 0
+            ;;
+    esac
+
+    if ! service_file_exists "$SERVICE_NAME"; then
+        echo "提示：${SERVICE_LABEL} 服务未安装。"
+        return 0
+    fi
+
+    echo "正在停止 ${SERVICE_LABEL} 服务..."
+
+    if [ "$SERVICE_MANAGER" = "systemd" ]; then
+        systemctl stop "$SERVICE_ID"
+    else
+        rc-service "$SERVICE_ID" stop
+    fi
+
+    echo "${SERVICE_LABEL} 服务状态：$(get_service_status "$SERVICE_NAME")"
+}
+
+restart_one_service() {
+    SERVICE_NAME="$1"
+
+    case "$SERVICE_NAME" in
+        realm)
+            SERVICE_ID="realm"
+            SERVICE_LABEL="realm"
+            ;;
+        nftables)
+            SERVICE_ID="realm-nft-forward"
+            SERVICE_LABEL="nftables"
+            ;;
+        *)
+            echo "错误：未知服务。"
+            return 0
+            ;;
+    esac
+
+    if ! service_file_exists "$SERVICE_NAME"; then
+        echo "提示：${SERVICE_LABEL} 服务未安装，请先新建对应转发规则。"
+        return 0
+    fi
+
+    echo "正在重启 ${SERVICE_LABEL} 服务..."
+
+    if [ "$SERVICE_MANAGER" = "systemd" ]; then
+        systemctl restart "$SERVICE_ID"
+    else
+        rc-service "$SERVICE_ID" restart
+    fi
+
+    echo "${SERVICE_LABEL} 服务状态：$(get_service_status "$SERVICE_NAME")"
+}
+
+show_one_service_log() {
+    SERVICE_NAME="$1"
+
+    case "$SERVICE_NAME" in
+        realm)
+            SERVICE_ID="realm"
+            SERVICE_LABEL="realm"
+            RULE_FILE="$REALM_RULES"
+            ;;
+        nftables)
+            SERVICE_ID="realm-nft-forward"
+            SERVICE_LABEL="nftables"
+            RULE_FILE="$NFT_RULES"
+            ;;
+        *)
+            echo "错误：未知服务。"
+            return 0
+            ;;
+    esac
+
+    echo ""
+    print_line
+    echo " ${SERVICE_LABEL} 服务日志 / 状态"
+    print_line
+    echo "服务状态：$(get_service_status "$SERVICE_NAME")"
+    echo ""
+
+    if [ "$SERVICE_MANAGER" = "systemd" ]; then
+        if service_file_exists "$SERVICE_NAME"; then
+            journalctl -u "$SERVICE_ID" -n 80 --no-pager || true
+        else
+            echo "提示：${SERVICE_LABEL} 服务未安装。"
+        fi
+    else
+        if service_file_exists "$SERVICE_NAME"; then
+            rc-service "$SERVICE_ID" status || true
+        else
+            echo "提示：${SERVICE_LABEL} 服务未安装。"
+        fi
+
+        echo ""
+        echo "OpenRC 系统没有统一 journalctl 日志。"
+
+        if [ -f /var/log/messages ]; then
+            echo ""
+            echo "最近系统日志："
+            tail -n 80 /var/log/messages || true
+        else
+            echo "未找到 /var/log/messages。"
+        fi
+    fi
+
+    echo ""
+    echo "当前规则文件：$RULE_FILE"
+    if [ -f "$RULE_FILE" ] && [ -s "$RULE_FILE" ]; then
+        cat "$RULE_FILE"
+    else
+        echo "暂无规则。"
+    fi
+}
+
+service_manage_menu() {
+    while true; do
+        echo ""
+        print_line
+        echo " 服务管理"
+        print_line
+        echo "1) 开启服务"
+        echo "2) 停止服务"
+        echo "3) 重启服务"
+        echo "4) 查看日志"
+        echo "0) 返回主菜单"
+        echo ""
+
+        read_input "请输入选项 [0-4]: " SERVICE_ACTION
+
+        case "$SERVICE_ACTION" in
+            1)
+                select_service_target || continue
+                case "$SERVICE_TARGET" in
+                    realm) start_one_service realm ;;
+                    nftables) start_one_service nftables ;;
+                    all) start_one_service realm; start_one_service nftables ;;
+                esac
+                ;;
+            2)
+                select_service_target || continue
+                case "$SERVICE_TARGET" in
+                    realm) stop_one_service realm ;;
+                    nftables) stop_one_service nftables ;;
+                    all) stop_one_service realm; stop_one_service nftables ;;
+                esac
+                ;;
+            3)
+                select_service_target || continue
+                case "$SERVICE_TARGET" in
+                    realm) restart_one_service realm ;;
+                    nftables) restart_one_service nftables ;;
+                    all) restart_one_service realm; restart_one_service nftables ;;
+                esac
+                ;;
+            4)
+                select_service_target || continue
+                case "$SERVICE_TARGET" in
+                    realm) show_one_service_log realm ;;
+                    nftables) show_one_service_log nftables ;;
+                    all) show_one_service_log realm; show_one_service_log nftables ;;
+                esac
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                echo "错误：无效选项。"
+                ;;
+        esac
+    done
+}
+
+ask_action() {
+    show_main_status
     echo " 主菜单"
     print_line
     echo "1) 新建转发规则"
     echo "2) 查看目前转发规则"
     echo "3) 删除转发规则"
-    echo "4) 卸载脚本安装的全部内容"
+    echo "4) 服务管理"
+    echo "5) 卸载脚本安装的全部内容"
     echo "0) 退出脚本"
     echo ""
 
-    read_input "请输入选项 [0-4]: " ACTION_CHOICE
+    read_input "请输入选项 [0-5]: " ACTION_CHOICE
 
     case "$ACTION_CHOICE" in
         1) ACTION="create" ;;
         2) ACTION="view" ;;
         3) ACTION="delete" ;;
-        4) ACTION="uninstall" ;;
+        4) ACTION="service" ;;
+        5) ACTION="uninstall" ;;
         0) echo "已退出脚本。"; exit 0 ;;
         *) echo "错误：无效选项。"; ACTION=""; return 1 ;;
     esac
@@ -1300,6 +1656,9 @@ while true; do
             ;;
         delete)
             delete_current_rules
+            ;;
+        service)
+            service_manage_menu
             ;;
         uninstall)
             uninstall_all
