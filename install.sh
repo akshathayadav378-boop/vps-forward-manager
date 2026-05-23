@@ -278,7 +278,7 @@ generate_random_port() {
 
         [ -z "$RAND_NUM" ] && RAND_NUM="$(date +%s)"
 
-        RANDOM_PORT=$((2000 + RAND_NUM % 63001))
+        RANDOM_PORT=$((20000 + RAND_NUM % 45001))
 
         if ! check_duplicate_rule_in_file "$REALM_RULES" "tcp" "$RANDOM_PORT" && \
            ! check_duplicate_rule_in_file "$REALM_RULES" "udp" "$RANDOM_PORT" && \
@@ -413,7 +413,7 @@ ask_forward_config() {
                 echo ""
                 echo "[5/10] 配置转发信息"
                 echo "--------------------------------------"
-                read_input "第一步 - 请输入本机监听端口 (回车默认随机 2000-65000，输入0返回): " LISTEN_PORT
+                read_input "第一步 - 请输入本机监听端口 (回车默认随机 20000-65000，输入0返回): " LISTEN_PORT
 
                 if [ "$LISTEN_PORT" = "0" ]; then return 1; fi
                 if [ -z "$LISTEN_PORT" ]; then
