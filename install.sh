@@ -82,6 +82,7 @@ print_line
 echo " VPS 端口转发一键管理脚本"
 echo " 支持系统：Debian / Ubuntu / Alpine"
 echo " 转发方式：realm / nftables"
+echo " realm增强：域名多IP自动选择可达IP"
 print_line
 echo ""
 
@@ -174,12 +175,12 @@ install_base_deps() {
 install_dns_deps() {
     case "$OS_FAMILY" in
         debian)
-            DEBIAN_FRONTEND=noninteractive apt-get install -y cron dnsutils >/dev/null 2>&1
+            DEBIAN_FRONTEND=noninteractive apt-get install -y cron dnsutils netcat-openbsd >/dev/null 2>&1 || true
             systemctl enable cron >/dev/null 2>&1 || true
             systemctl start cron >/dev/null 2>&1 || true
             ;;
         alpine)
-            apk add --no-cache dcron bind-tools >/dev/null 2>&1
+            apk add --no-cache dcron bind-tools netcat-openbsd >/dev/null 2>&1 || true
             rc-update add dcron default >/dev/null 2>&1 || true
             rc-service dcron start >/dev/null 2>&1 || true
             ;;
@@ -259,6 +260,7 @@ show_system_info() {
     echo "服务管理器     ：$SERVICE_MANAGER"
     echo "CPU 架构       ：$(uname -m)"
     echo "快捷命令       ：vfm"
+    echo "realm增强      ：域名多IP自动选择可达IP"
     echo "--------------------------------------"
     echo ""
 }
@@ -272,28 +274,6 @@ is_valid_port() {
         return 1
     fi
     return 0
-}
-
-generate_random_port() {
-    while true; do
-        if command -v od >/dev/null 2>&1; then
-            RAND_NUM="$(od -An -N2 -tu2 /dev/urandom 2>/dev/null | tr -d ' ')"
-        else
-            RAND_NUM="$(date +%s)"
-        fi
-
-        [ -z "$RAND_NUM" ] && RAND_NUM="$(date +%s)"
-
-        RANDOM_PORT=$((20000 + RAND_NUM % 45001))
-
-        if ! check_duplicate_rule_in_file "$REALM_RULES" "tcp" "$RANDOM_PORT" && \
-           ! check_duplicate_rule_in_file "$REALM_RULES" "udp" "$RANDOM_PORT" && \
-           ! check_duplicate_rule_in_file "$NFT_RULES" "tcp" "$RANDOM_PORT" && \
-           ! check_duplicate_rule_in_file "$NFT_RULES" "udp" "$RANDOM_PORT"; then
-            echo "$RANDOM_PORT"
-            return 0
-        fi
-    done
 }
 
 is_ipv4() {
@@ -311,6 +291,79 @@ is_ip_address() {
     return 1
 }
 
+resolve_all_ipv4() {
+    TARGET_HOST="$1"
+
+    if is_ipv4 "$TARGET_HOST"; then
+        echo "$TARGET_HOST"
+        return 0
+    fi
+
+    if command -v getent >/dev/null 2>&1; then
+        getent ahostsv4 "$TARGET_HOST" 2>/dev/null | awk '{print $1}' | sort -u
+        return 0
+    fi
+
+    if command -v nslookup >/dev/null 2>&1; then
+        nslookup "$TARGET_HOST" 2>/dev/null | awk '/^Address: / {print $2}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u
+        return 0
+    fi
+
+    return 0
+}
+
+test_ip_port_reachable_tcp() {
+    TEST_IP="$1"
+    TEST_PORT="$2"
+
+    if ! command -v nc >/dev/null 2>&1; then
+        return 1
+    fi
+
+    nc -z -w 2 "$TEST_IP" "$TEST_PORT" >/dev/null 2>&1
+}
+
+test_ip_port_reachable_udp() {
+    TEST_IP="$1"
+    TEST_PORT="$2"
+
+    if ! command -v nc >/dev/null 2>&1; then
+        return 1
+    fi
+
+    nc -zu -w 2 "$TEST_IP" "$TEST_PORT" >/dev/null 2>&1
+}
+
+select_reachable_ip() {
+    TARGET_HOST="$1"
+    TARGET_PORT="$2"
+    TARGET_PROTO="$3"
+
+    if is_ipv4 "$TARGET_HOST"; then
+        echo "$TARGET_HOST"
+        return 0
+    fi
+
+    for IP in $(resolve_all_ipv4 "$TARGET_HOST"); do
+        case "$TARGET_PROTO" in
+            udp)
+                if test_ip_port_reachable_udp "$IP" "$TARGET_PORT"; then
+                    echo "$IP"
+                    return 0
+                fi
+                ;;
+            *)
+                if test_ip_port_reachable_tcp "$IP" "$TARGET_PORT"; then
+                    echo "$IP"
+                    return 0
+                fi
+                ;;
+        esac
+    done
+
+    return 1
+}
+
 format_remote_addr() {
     HOST="$1"
     PORT="$2"
@@ -321,6 +374,20 @@ format_remote_addr() {
         esac
     else
         REMOTE_ADDR="${HOST}:${PORT}"
+    fi
+}
+
+format_rule_remote_addr() {
+    RULE_HOST="$1"
+    RULE_PORT="$2"
+
+    if is_ipv6 "$RULE_HOST"; then
+        case "$RULE_HOST" in
+            \[*\]) echo "${RULE_HOST}:${RULE_PORT}" ;;
+            *) echo "[${RULE_HOST}]:${RULE_PORT}" ;;
+        esac
+    else
+        echo "${RULE_HOST}:${RULE_PORT}"
     fi
 }
 
@@ -427,6 +494,28 @@ test_target_port() {
     return 0
 }
 
+generate_random_port() {
+    while true; do
+        if command -v od >/dev/null 2>&1; then
+            RAND_NUM="$(od -An -N2 -tu2 /dev/urandom 2>/dev/null | tr -d ' ')"
+        else
+            RAND_NUM="$(date +%s)"
+        fi
+
+        [ -z "$RAND_NUM" ] && RAND_NUM="$(date +%s)"
+
+        RANDOM_PORT=$((20000 + RAND_NUM % 45001))
+
+        if ! check_duplicate_rule_in_file "$REALM_RULES" "tcp" "$RANDOM_PORT" && \
+           ! check_duplicate_rule_in_file "$REALM_RULES" "udp" "$RANDOM_PORT" && \
+           ! check_duplicate_rule_in_file "$NFT_RULES" "tcp" "$RANDOM_PORT" && \
+           ! check_duplicate_rule_in_file "$NFT_RULES" "udp" "$RANDOM_PORT"; then
+            echo "$RANDOM_PORT"
+            return 0
+        fi
+    done
+}
+
 test_realm_forward() {
     echo ""
     print_line
@@ -466,6 +555,13 @@ test_realm_forward() {
         echo "目标解析结果：${REMOTE_HOST} -> ${RESOLVED_IP}"
     else
         echo "目标解析结果：未解析到 IP，请检查 DNS。"
+    fi
+
+    SELECTED_IP="$(select_reachable_ip "$REMOTE_HOST" "$REMOTE_PORT" "$PROTO" 2>/dev/null || true)"
+    if [ -n "$SELECTED_IP" ]; then
+        echo "自动选择可达 IP：${REMOTE_HOST} -> ${SELECTED_IP}"
+    else
+        echo "自动选择可达 IP：未找到确认可达的 IPv4，realm 配置可能回退为原始域名。"
     fi
 
     test_target_port "$PROTO" "$REMOTE_HOST" "$REMOTE_PORT"
@@ -600,6 +696,7 @@ show_main_status() {
     echo "realm 规则数量      ：${REALM_COUNT} 条"
     echo "nftables 规则数量   ：${NFT_COUNT} 条"
     echo "快捷命令            ：vfm"
+    echo "realm增强           ：域名多IP自动选择可达IP"
     print_line
 }
 
@@ -757,8 +854,14 @@ restart_one_service() {
     echo "正在重启 ${SERVICE_LABEL} 服务..."
 
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
+        if [ "$SERVICE_NAME" = "realm" ]; then
+            regenerate_realm_config
+        fi
         systemctl restart "$SERVICE_ID"
     else
+        if [ "$SERVICE_NAME" = "realm" ]; then
+            regenerate_realm_config
+        fi
         rc-service "$SERVICE_ID" restart
     fi
 
@@ -823,6 +926,16 @@ show_one_service_log() {
         cat "$RULE_FILE"
     else
         echo "暂无规则。"
+    fi
+
+    if [ "$SERVICE_NAME" = "realm" ]; then
+        echo ""
+        echo "当前 realm 配置文件：$REALM_CONF"
+        if [ -f "$REALM_CONF" ] && [ -s "$REALM_CONF" ]; then
+            cat "$REALM_CONF"
+        else
+            echo "暂无配置。"
+        fi
     fi
 }
 
@@ -914,7 +1027,7 @@ ask_mode() {
     echo ""
     echo "[4/10] 请选择转发方式"
     echo "--------------------------------------"
-    echo "1) realm    - 用户态转发，支持域名/IP，适合动态域名"
+    echo "1) realm    - 用户态转发，支持域名/IP，支持域名多IP自动选择可达IP"
     echo "2) nftables - 内核级 DNAT/SNAT，性能更好，目标必须固定IPv4"
     echo "0) 返回主菜单"
     echo "--------------------------------------"
@@ -1063,7 +1176,8 @@ ask_forward_config() {
                     else
                         echo ""
                         echo "提示：检测到目标为域名。"
-                        echo "是否启用 DNS 自动刷新？(域名 IP 变化时自动重启 realm)"
+                        echo "本脚本将自动解析该域名的多个 IPv4，并选择目标端口可达的 IP 写入 realm 配置。"
+                        echo "是否启用 DNS/可达IP 自动刷新？(IP变化或可达IP变化时自动重启 realm)"
                         echo "Y) 启用"
                         echo "n) 不启用"
                         echo "0) 返回上一步"
@@ -1082,7 +1196,7 @@ ask_forward_config() {
                             ""|y|Y|yes|YES|*)
                                 ENABLE_DNS_REFRESH="yes"
                                 while true; do
-                                    read_input "请输入 DNS 刷新间隔分钟数 [回车默认 5，输入 0 返回]: " DNS_REFRESH_INTERVAL_INPUT
+                                    read_input "请输入 DNS/可达IP 刷新间隔分钟数 [回车默认 5，输入 0 返回]: " DNS_REFRESH_INTERVAL_INPUT
 
                                     if [ "$DNS_REFRESH_INTERVAL_INPUT" = "0" ]; then STEP=4; continue 2; fi
                                     if [ -n "$DNS_REFRESH_INTERVAL_INPUT" ]; then DNS_REFRESH_INTERVAL="$DNS_REFRESH_INTERVAL_INPUT"; fi
@@ -1110,7 +1224,15 @@ ask_forward_config() {
                 echo "协议     ：${PROTO}"
 
                 if [ "$MODE" = "realm" ]; then
-                    echo "DNS 刷新 ：${ENABLE_DNS_REFRESH}"
+                    echo "DNS/可达IP刷新 ：${ENABLE_DNS_REFRESH}"
+                    if ! is_ip_address "$REMOTE_HOST"; then
+                        SELECTED_PREVIEW="$(select_reachable_ip "$REMOTE_HOST" "$REMOTE_PORT" "$PROTO" 2>/dev/null || true)"
+                        if [ -n "$SELECTED_PREVIEW" ]; then
+                            echo "当前可达IP ：${SELECTED_PREVIEW}"
+                        else
+                            echo "当前可达IP ：未找到，安装时将回退使用原域名"
+                        fi
+                    fi
                 fi
 
                 echo ""
@@ -1229,19 +1351,6 @@ append_rule_to_file() {
     fi
 }
 
-format_rule_remote_addr() {
-    RULE_HOST="$1"
-    RULE_PORT="$2"
-    if echo "$RULE_HOST" | grep -q ':'; then
-        case "$RULE_HOST" in
-            \[*\]) echo "${RULE_HOST}:${RULE_PORT}" ;;
-            *) echo "[${RULE_HOST}]:${RULE_PORT}" ;;
-        esac
-    else
-        echo "${RULE_HOST}:${RULE_PORT}"
-    fi
-}
-
 regenerate_realm_config() {
     mkdir -p "$REALM_DIR"
     : > "$REALM_CONF"
@@ -1256,7 +1365,19 @@ regenerate_realm_config() {
         [ -z "$RULE_HOST" ] && continue
         [ -z "$RULE_PORT" ] && continue
 
-        RULE_REMOTE="$(format_rule_remote_addr "$RULE_HOST" "$RULE_PORT")"
+        SELECTED_HOST="$RULE_HOST"
+
+        if ! is_ip_address "$RULE_HOST"; then
+            CHOSEN_IP="$(select_reachable_ip "$RULE_HOST" "$RULE_PORT" "$RULE_PROTO" 2>/dev/null || true)"
+            if [ -n "$CHOSEN_IP" ]; then
+                SELECTED_HOST="$CHOSEN_IP"
+                echo "realm配置生成：${RULE_HOST}:${RULE_PORT} -> 已选择可达IP ${SELECTED_HOST}"
+            else
+                echo "realm配置生成：${RULE_HOST}:${RULE_PORT} -> 未找到可达IP，回退使用原域名"
+            fi
+        fi
+
+        RULE_REMOTE="$(format_rule_remote_addr "$SELECTED_HOST" "$RULE_PORT")"
 
         if [ "$RULE_PROTO" = "tcp" ]; then
             cat >> "$REALM_CONF" <<EOF
@@ -1362,6 +1483,7 @@ apply_vfm_forward_rules
 EOF
     chmod +x "$NFT_APPLY_SCRIPT"
 }
+
 apply_nft_rules() {
     if [ ! -x "$NFT_APPLY_SCRIPT" ]; then
         write_nft_apply_script
@@ -1453,50 +1575,179 @@ write_dns_refresh_script() {
 #!/bin/sh
 
 RULES="/etc/realm/rules-realm.conf"
+CONF="/etc/realm/config.toml"
 STATE_FILE="/run/realm_dns_rules_state"
 
 if [ ! -f "$RULES" ] || [ ! -s "$RULES" ]; then exit 0; fi
 
-resolve_domain() {
-    DOMAIN="$1"
-    if command -v getent >/dev/null 2>&1; then
-        getent hosts "$DOMAIN" 2>/dev/null | awk '{print $1}' | head -n 1
-        return
-    fi
-    if command -v nslookup >/dev/null 2>&1; then
-        nslookup "$DOMAIN" 2>/dev/null | awk '/^Address: / {print $2}' | tail -n 1
-        return
-    fi
+is_ipv4() {
+    echo "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
+}
+
+is_ipv6() {
+    echo "$1" | grep -q ':'
+}
+
+is_ip_address() {
+    HOST="$1"
+    if is_ipv4 "$HOST"; then return 0; fi
+    if is_ipv6 "$HOST"; then return 0; fi
     return 1
 }
 
+resolve_all_ipv4() {
+    TARGET_HOST="$1"
+
+    if is_ipv4 "$TARGET_HOST"; then
+        echo "$TARGET_HOST"
+        return 0
+    fi
+
+    if command -v getent >/dev/null 2>&1; then
+        getent ahostsv4 "$TARGET_HOST" 2>/dev/null | awk '{print $1}' | sort -u
+        return 0
+    fi
+
+    if command -v nslookup >/dev/null 2>&1; then
+        nslookup "$TARGET_HOST" 2>/dev/null | awk '/^Address: / {print $2}' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u
+        return 0
+    fi
+
+    return 0
+}
+
+test_ip_port_reachable_tcp() {
+    TEST_IP="$1"
+    TEST_PORT="$2"
+
+    if ! command -v nc >/dev/null 2>&1; then
+        return 1
+    fi
+
+    nc -z -w 2 "$TEST_IP" "$TEST_PORT" >/dev/null 2>&1
+}
+
+test_ip_port_reachable_udp() {
+    TEST_IP="$1"
+    TEST_PORT="$2"
+
+    if ! command -v nc >/dev/null 2>&1; then
+        return 1
+    fi
+
+    nc -zu -w 2 "$TEST_IP" "$TEST_PORT" >/dev/null 2>&1
+}
+
+select_reachable_ip() {
+    TARGET_HOST="$1"
+    TARGET_PORT="$2"
+    TARGET_PROTO="$3"
+
+    if is_ipv4 "$TARGET_HOST"; then
+        echo "$TARGET_HOST"
+        return 0
+    fi
+
+    for IP in $(resolve_all_ipv4 "$TARGET_HOST"); do
+        case "$TARGET_PROTO" in
+            udp)
+                if test_ip_port_reachable_udp "$IP" "$TARGET_PORT"; then
+                    echo "$IP"
+                    return 0
+                fi
+                ;;
+            *)
+                if test_ip_port_reachable_tcp "$IP" "$TARGET_PORT"; then
+                    echo "$IP"
+                    return 0
+                fi
+                ;;
+        esac
+    done
+
+    return 1
+}
+
+format_rule_remote_addr() {
+    RULE_HOST="$1"
+    RULE_PORT="$2"
+
+    if is_ipv6 "$RULE_HOST"; then
+        case "$RULE_HOST" in
+            \[*\]) echo "${RULE_HOST}:${RULE_PORT}" ;;
+            *) echo "[${RULE_HOST}]:${RULE_PORT}" ;;
+        esac
+    else
+        echo "${RULE_HOST}:${RULE_PORT}"
+    fi
+}
+
+TMP_CONF="$(mktemp)"
 TMP_STATE="$(mktemp)"
 
 while IFS='|' read -r RULE_PROTO RULE_LISTEN RULE_HOST RULE_PORT; do
+    [ -z "$RULE_PROTO" ] && continue
+    [ -z "$RULE_LISTEN" ] && continue
     [ -z "$RULE_HOST" ] && continue
-    if echo "$RULE_HOST" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then continue; fi
-    if echo "$RULE_HOST" | grep -q ':'; then continue; fi
+    [ -z "$RULE_PORT" ] && continue
 
-    IP="$(resolve_domain "$RULE_HOST")"
-    [ -z "$IP" ] && continue
-    echo "${RULE_HOST}=${IP}" >> "$TMP_STATE"
+    SELECTED_HOST="$RULE_HOST"
+
+    if ! is_ip_address "$RULE_HOST"; then
+        CHOSEN_IP="$(select_reachable_ip "$RULE_HOST" "$RULE_PORT" "$RULE_PROTO" 2>/dev/null || true)"
+        if [ -n "$CHOSEN_IP" ]; then
+            SELECTED_HOST="$CHOSEN_IP"
+        fi
+    fi
+
+    echo "${RULE_PROTO}|${RULE_LISTEN}|${RULE_HOST}|${RULE_PORT}|${SELECTED_HOST}" >> "$TMP_STATE"
+
+    RULE_REMOTE="$(format_rule_remote_addr "$SELECTED_HOST" "$RULE_PORT")"
+
+    if [ "$RULE_PROTO" = "tcp" ]; then
+        cat >> "$TMP_CONF" <<EOC
+
+[[endpoints]]
+listen = "0.0.0.0:${RULE_LISTEN}"
+remote = "${RULE_REMOTE}"
+EOC
+    elif [ "$RULE_PROTO" = "udp" ]; then
+        cat >> "$TMP_CONF" <<EOC
+
+[[endpoints]]
+listen = "udp://0.0.0.0:${RULE_LISTEN}"
+remote = "udp://${RULE_REMOTE}"
+EOC
+    fi
 done < "$RULES"
 
-if [ ! -s "$TMP_STATE" ]; then rm -f "$TMP_STATE"; exit 0; fi
-
-if [ ! -f "$STATE_FILE" ]; then
-    mv "$TMP_STATE" "$STATE_FILE"
-    if command -v systemctl >/dev/null 2>&1; then systemctl restart realm >/dev/null 2>&1 || true
-    elif command -v rc-service >/dev/null 2>&1; then rc-service realm restart >/dev/null 2>&1 || true; fi
+if [ ! -s "$TMP_CONF" ]; then
+    rm -f "$TMP_CONF" "$TMP_STATE"
     exit 0
 fi
 
-if ! cmp -s "$TMP_STATE" "$STATE_FILE"; then
-    mv "$TMP_STATE" "$STATE_FILE"
-    if command -v systemctl >/dev/null 2>&1; then systemctl restart realm >/dev/null 2>&1 || true
-    elif command -v rc-service >/dev/null 2>&1; then rc-service realm restart >/dev/null 2>&1 || true; fi
+NEED_RESTART="no"
+
+if [ ! -f "$STATE_FILE" ]; then
+    NEED_RESTART="yes"
 else
-    rm -f "$TMP_STATE"
+    if ! cmp -s "$TMP_STATE" "$STATE_FILE"; then
+        NEED_RESTART="yes"
+    fi
+fi
+
+if [ "$NEED_RESTART" = "yes" ]; then
+    mv "$TMP_CONF" "$CONF"
+    mv "$TMP_STATE" "$STATE_FILE"
+    chmod 644 "$CONF"
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl restart realm >/dev/null 2>&1 || true
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service realm restart >/dev/null 2>&1 || true
+    fi
+else
+    rm -f "$TMP_CONF" "$TMP_STATE"
 fi
 EOF
     chmod +x "$DNS_REFRESH_SCRIPT"
@@ -1506,7 +1757,7 @@ install_dns_refresh_systemd() {
     write_dns_refresh_script
     cat > "$SYSTEMD_REFRESH_SERVICE" <<EOF
 [Unit]
-Description=Refresh realm DNS targets if domain IP changed
+Description=Refresh realm DNS targets and reachable IP
 
 [Service]
 Type=oneshot
@@ -1514,7 +1765,7 @@ ExecStart=${DNS_REFRESH_SCRIPT}
 EOF
     cat > "$SYSTEMD_REFRESH_TIMER" <<EOF
 [Unit]
-Description=Run realm DNS refresh periodically
+Description=Run realm DNS/reachable-IP refresh periodically
 
 [Timer]
 OnBootSec=2min
@@ -1546,9 +1797,9 @@ install_dns_refresh_openrc() {
 
 configure_dns_refresh() {
     echo ""
-    echo "[9/10] 正在配置 DNS 自动刷新..."
+    echo "[9/10] 正在配置 DNS/可达IP 自动刷新..."
     if [ "$MODE" != "realm" ] || [ "$ENABLE_DNS_REFRESH" != "yes" ]; then
-        echo "DNS 自动刷新未启用。"
+        echo "DNS/可达IP 自动刷新未启用。"
         return
     fi
 
@@ -1559,7 +1810,7 @@ configure_dns_refresh() {
     else
         install_dns_refresh_openrc
     fi
-    echo "DNS 自动刷新已成功启用。"
+    echo "DNS/可达IP 自动刷新已成功启用。"
 }
 
 enable_ip_forward() {
@@ -1669,6 +1920,15 @@ view_current_rules() {
         echo "【 realm 规则 】"
         echo "--------------------------------------"
         print_rule_file_numbered "$REALM_RULES"
+        echo ""
+
+        echo "【 realm 当前实际配置 】"
+        echo "--------------------------------------"
+        if [ -f "$REALM_CONF" ] && [ -s "$REALM_CONF" ]; then
+            cat "$REALM_CONF"
+        else
+            echo "  暂无配置。"
+        fi
         echo ""
 
         echo "【 nftables 规则 】"
@@ -1887,6 +2147,13 @@ show_result() {
         echo "【 realm 当前规则 】："
         print_rule_file_numbered "$REALM_RULES"
         echo ""
+        echo "【 realm 当前实际配置 】："
+        if [ -f "$REALM_CONF" ] && [ -s "$REALM_CONF" ]; then
+            cat "$REALM_CONF"
+        else
+            echo "暂无配置。"
+        fi
+        echo ""
     else
         echo "【 nftables 当前规则 】："
         print_rule_file_numbered "$NFT_RULES"
@@ -1897,6 +2164,7 @@ show_result() {
     echo "1. 请在云服务器安全组/防火墙中放行监听端口 [ ${LISTEN_PORT} ]"
     echo "2. nftables 模式下，端口处于内核 NAT 转发层级，使用 netstat 或 ss 将无法查看到 LISTEN 状态（这是正常现象）"
     echo "3. 日常管理可通过在终端直接输入快捷命令：vfm 打开本脚本"
+    echo "4. realm 模式下，如果目标是域名，本脚本会尝试从多个 IPv4 中选择目标端口可达的 IP 写入实际配置"
     echo ""
 }
 
