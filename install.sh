@@ -79,20 +79,20 @@ confirm_input() {
 }
 
 print_line
-echo " VPS 绔彛杞彂涓€閿鐞嗚剼鏈�"
-echo " 鏀寔绯荤粺锛欴ebian / Ubuntu / Alpine"
-echo " 杞彂鏂瑰紡锛歳ealm / nftables"
+echo " VPS 端口转发一键管理脚本"
+echo " 支持系统：Debian / Ubuntu / Alpine"
+echo " 转发方式：realm / nftables"
 print_line
 echo ""
 
 if [ "$(id -u)" != "0" ]; then
-    echo "閿欒锛氳浣跨敤 root 鐢ㄦ埛杩愯姝よ剼鏈€�"
+    echo "错误：请使用 root 用户运行此脚本。"
     exit 1
 fi
 
 detect_os() {
     if [ ! -f /etc/os-release ]; then
-        echo "閿欒锛氭棤娉曟娴嬬郴缁燂紝鏈壘鍒� /etc/os-release銆�"
+        echo "错误：无法检测系统，未找到 /etc/os-release。"
         exit 1
     fi
 
@@ -117,8 +117,8 @@ detect_os() {
                     SERVICE_MANAGER="systemd"
                     ;;
                 *)
-                    echo "閿欒锛氫笉鏀寔褰撳墠绯荤粺锛�$OS_ID"
-                    echo "褰撳墠鑴氭湰浠呮敮鎸� Debian / Ubuntu / Alpine銆�"
+                    echo "错误：不支持当前系统：$OS_ID"
+                    echo "当前脚本仅支持 Debian / Ubuntu / Alpine。"
                     exit 1
                     ;;
             esac
@@ -126,18 +126,18 @@ detect_os() {
     esac
 
     if [ "$SERVICE_MANAGER" = "systemd" ] && ! command -v systemctl >/dev/null 2>&1; then
-        echo "閿欒锛氭湭鎵惧埌 systemctl銆傚綋鍓嶇郴缁熷彲鑳戒笉鏄� systemd 鐜銆�"
+        echo "错误：未找到 systemctl。当前系统可能不是 systemd 环境。"
         exit 1
     fi
 
     if [ "$SERVICE_MANAGER" = "openrc" ] && ! command -v rc-service >/dev/null 2>&1; then
-        echo "閿欒锛氭湭鎵惧埌 rc-service銆傚綋鍓� Alpine 绯荤粺鍙兘涓嶆槸 OpenRC 鐜銆�"
+        echo "错误：未找到 rc-service。当前 Alpine 系统可能不是 OpenRC 环境。"
         exit 1
     fi
 }
 
 install_base_deps() {
-    echo "[1/10] 姝ｅ湪瀹夎鍩虹渚濊禆..."
+    echo "[1/10] 正在安装基础依赖..."
 
     case "$OS_FAMILY" in
         debian)
@@ -188,7 +188,7 @@ install_dns_deps() {
 
 install_nft_deps() {
     echo ""
-    echo "姝ｅ湪瀹夎 nftables 渚濊禆..."
+    echo "正在安装 nftables 依赖..."
 
     case "$OS_FAMILY" in
         debian)
@@ -214,8 +214,8 @@ detect_arch() {
             CPU_ARCH="armv7"
             ;;
         *)
-            echo "閿欒锛氫笉鏀寔褰撳墠 CPU 鏋舵瀯锛�$ARCH"
-            echo "褰撳墠鑴氭湰鏀寔锛歺86_64 / aarch64 / armv7"
+            echo "错误：不支持当前 CPU 架构：$ARCH"
+            echo "当前脚本支持：x86_64 / aarch64 / armv7"
             exit 1
             ;;
     esac
@@ -253,12 +253,12 @@ install_shortcut() {
 
 show_system_info() {
     echo ""
-    echo "[2/10] 褰撳墠绯荤粺淇℃伅"
+    echo "[2/10] 当前系统信息"
     echo "--------------------------------------"
-    echo "绯荤粺绫诲瀷       锛�$OS_FAMILY"
-    echo "鏈嶅姟绠＄悊鍣�     锛�$SERVICE_MANAGER"
-    echo "CPU 鏋舵瀯       锛�$(uname -m)"
-    echo "蹇嵎鍛戒护       锛歷fm"
+    echo "系统类型       ：$OS_FAMILY"
+    echo "服务管理器     ：$SERVICE_MANAGER"
+    echo "CPU 架构       ：$(uname -m)"
+    echo "快捷命令       ：vfm"
     echo "--------------------------------------"
     echo ""
 }
@@ -347,7 +347,7 @@ install_test_deps() {
         return 0
     fi
 
-    echo "姝ｅ湪瀹夎杩為€氭€ф祴璇曞伐鍏� netcat-openbsd..."
+    echo "正在安装连通性测试工具 netcat-openbsd..."
 
     case "$OS_FAMILY" in
         debian)
@@ -388,38 +388,38 @@ test_target_port() {
     TEST_PORT="$3"
 
     if ! command -v nc >/dev/null 2>&1; then
-        echo "鏈娴嬪埌 nc锛屽凡璺宠繃鐩爣绔彛杩為€氭€ф祴璇曘€�"
+        echo "未检测到 nc，已跳过目标端口连通性测试。"
         return 0
     fi
 
     case "$TEST_PROTO" in
         udp)
             if nc -vzu -w 5 "$TEST_HOST" "$TEST_PORT" >/dev/null 2>&1; then
-                echo "鐩爣 UDP 绔彛娴嬭瘯锛氬彲杈�"
+                echo "目标 UDP 端口测试：可达"
             else
-                echo "鐩爣 UDP 绔彛娴嬭瘯锛氭湭纭鍙揪"
-                echo "鎻愮ず锛歎DP 鐨� nc 娴嬭瘯涓嶄竴瀹氬噯纭紝鏈€缁堜互瀹㈡埛绔疄闄呰繛鎺ヤ负鍑嗐€�"
+                echo "目标 UDP 端口测试：未确认可达"
+                echo "提示：UDP 的 nc 测试不一定准确，最终以客户端实际连接为准。"
             fi
             ;;
         both)
             if nc -vz -w 5 "$TEST_HOST" "$TEST_PORT" >/dev/null 2>&1; then
-                echo "鐩爣 TCP 绔彛娴嬭瘯锛氬彲杈�"
+                echo "目标 TCP 端口测试：可达"
             else
-                echo "鐩爣 TCP 绔彛娴嬭瘯锛氬け璐ユ垨瓒呮椂"
+                echo "目标 TCP 端口测试：失败或超时"
             fi
 
             if nc -vzu -w 5 "$TEST_HOST" "$TEST_PORT" >/dev/null 2>&1; then
-                echo "鐩爣 UDP 绔彛娴嬭瘯锛氬彲杈�"
+                echo "目标 UDP 端口测试：可达"
             else
-                echo "鐩爣 UDP 绔彛娴嬭瘯锛氭湭纭鍙揪"
-                echo "鎻愮ず锛歎DP 鐨� nc 娴嬭瘯涓嶄竴瀹氬噯纭紝鏈€缁堜互瀹㈡埛绔疄闄呰繛鎺ヤ负鍑嗐€�"
+                echo "目标 UDP 端口测试：未确认可达"
+                echo "提示：UDP 的 nc 测试不一定准确，最终以客户端实际连接为准。"
             fi
             ;;
         *)
             if nc -vz -w 5 "$TEST_HOST" "$TEST_PORT" >/dev/null 2>&1; then
-                echo "鐩爣 TCP 绔彛娴嬭瘯锛氬彲杈�"
+                echo "目标 TCP 端口测试：可达"
             else
-                echo "鐩爣 TCP 绔彛娴嬭瘯锛氬け璐ユ垨瓒呮椂"
+                echo "目标 TCP 端口测试：失败或超时"
             fi
             ;;
     esac
@@ -430,90 +430,90 @@ test_target_port() {
 test_realm_forward() {
     echo ""
     print_line
-    echo " realm 杞彂杩為€氭€ф祴璇�"
+    echo " realm 转发连通性测试"
     print_line
 
-    echo "realm 鏈嶅姟鐘舵€侊細$(get_service_status realm)"
+    echo "realm 服务状态：$(get_service_status realm)"
 
     if [ "$PROTO" = "udp" ]; then
         if ss -lnup 2>/dev/null | grep -q ":${LISTEN_PORT} "; then
-            echo "鏈満 UDP 鐩戝惉娴嬭瘯锛氬凡鐩戝惉 0.0.0.0:${LISTEN_PORT}"
+            echo "本机 UDP 监听测试：已监听 0.0.0.0:${LISTEN_PORT}"
         else
-            echo "鏈満 UDP 鐩戝惉娴嬭瘯锛氭湭妫€娴嬪埌鐩戝惉锛岃妫€鏌� realm 鏈嶅姟銆�"
+            echo "本机 UDP 监听测试：未检测到监听，请检查 realm 服务。"
         fi
     elif [ "$PROTO" = "both" ]; then
         if ss -lntp 2>/dev/null | grep -q ":${LISTEN_PORT} "; then
-            echo "鏈満 TCP 鐩戝惉娴嬭瘯锛氬凡鐩戝惉 0.0.0.0:${LISTEN_PORT}"
+            echo "本机 TCP 监听测试：已监听 0.0.0.0:${LISTEN_PORT}"
         else
-            echo "鏈満 TCP 鐩戝惉娴嬭瘯锛氭湭妫€娴嬪埌鐩戝惉锛岃妫€鏌� realm 鏈嶅姟銆�"
+            echo "本机 TCP 监听测试：未检测到监听，请检查 realm 服务。"
         fi
 
         if ss -lnup 2>/dev/null | grep -q ":${LISTEN_PORT} "; then
-            echo "鏈満 UDP 鐩戝惉娴嬭瘯锛氬凡鐩戝惉 0.0.0.0:${LISTEN_PORT}"
+            echo "本机 UDP 监听测试：已监听 0.0.0.0:${LISTEN_PORT}"
         else
-            echo "鏈満 UDP 鐩戝惉娴嬭瘯锛氭湭妫€娴嬪埌鐩戝惉锛岃妫€鏌� realm 鏈嶅姟銆�"
+            echo "本机 UDP 监听测试：未检测到监听，请检查 realm 服务。"
         fi
     else
         if ss -lntp 2>/dev/null | grep -q ":${LISTEN_PORT} "; then
-            echo "鏈満 TCP 鐩戝惉娴嬭瘯锛氬凡鐩戝惉 0.0.0.0:${LISTEN_PORT}"
+            echo "本机 TCP 监听测试：已监听 0.0.0.0:${LISTEN_PORT}"
         else
-            echo "鏈満 TCP 鐩戝惉娴嬭瘯锛氭湭妫€娴嬪埌鐩戝惉锛岃妫€鏌� realm 鏈嶅姟銆�"
+            echo "本机 TCP 监听测试：未检测到监听，请检查 realm 服务。"
         fi
     fi
 
     RESOLVED_IP="$(resolve_target_host "$REMOTE_HOST")"
     if [ -n "$RESOLVED_IP" ]; then
-        echo "鐩爣瑙ｆ瀽缁撴灉锛�${REMOTE_HOST} -> ${RESOLVED_IP}"
+        echo "目标解析结果：${REMOTE_HOST} -> ${RESOLVED_IP}"
     else
-        echo "鐩爣瑙ｆ瀽缁撴灉锛氭湭瑙ｆ瀽鍒� IP锛岃妫€鏌� DNS銆�"
+        echo "目标解析结果：未解析到 IP，请检查 DNS。"
     fi
 
     test_target_port "$PROTO" "$REMOTE_HOST" "$REMOTE_PORT"
 
     echo ""
-    echo "鎻愮ず锛氬鏋滄湰鏈虹洃鍚甯革紝浣嗗鎴风浠嶆棤娉曡繛鎺ワ紝璇锋鏌ヤ簯鏈嶅姟鍣ㄥ畨鍏ㄧ粍鏄惁鏀捐鐩戝惉绔彛 ${LISTEN_PORT}銆�"
+    echo "提示：如果本机监听正常，但客户端仍无法连接，请检查云服务器安全组是否放行监听端口 ${LISTEN_PORT}。"
 }
 
 test_nft_forward() {
     echo ""
     print_line
-    echo " nftables 杞彂杩為€氭€ф祴璇�"
+    echo " nftables 转发连通性测试"
     print_line
 
     IP_FORWARD_VALUE="$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)"
     if [ "$IP_FORWARD_VALUE" = "1" ]; then
-        echo "IPv4 杞彂鐘舵€侊細宸插紑鍚�"
+        echo "IPv4 转发状态：已开启"
     else
-        echo "IPv4 杞彂鐘舵€侊細鏈紑鍚�"
+        echo "IPv4 转发状态：未开启"
     fi
 
     if nft list table ip realm_forward >/dev/null 2>&1; then
-        echo "nftables NAT 琛細宸插瓨鍦�"
+        echo "nftables NAT 表：已存在"
     else
-        echo "nftables NAT 琛細鏈壘鍒�"
+        echo "nftables NAT 表：未找到"
     fi
 
     if nft list table ip realm_forward 2>/dev/null | grep -q "dport ${LISTEN_PORT} dnat to ${REMOTE_HOST}:${REMOTE_PORT}"; then
-        echo "DNAT 瑙勫垯妫€鏌ワ細宸叉壘鍒扮洃鍚鍙� ${LISTEN_PORT} 鐨勮浆鍙戣鍒�"
+        echo "DNAT 规则检查：已找到监听端口 ${LISTEN_PORT} 的转发规则"
     else
-        echo "DNAT 瑙勫垯妫€鏌ワ細鏈‘璁ゆ壘鍒板搴旇鍒欙紝璇锋墽琛� nft list table ip realm_forward 妫€鏌ャ€�"
+        echo "DNAT 规则检查：未确认找到对应规则，请执行 nft list table ip realm_forward 检查。"
     fi
 
     if command -v iptables >/dev/null 2>&1; then
         if iptables -S FORWARD 2>/dev/null | grep -q "VFM_NFT_FORWARD"; then
-            echo "FORWARD 鏀捐瑙勫垯锛氬凡瀛樺湪 VFM_NFT_FORWARD 鏍囪瑙勫垯"
+            echo "FORWARD 放行规则：已存在 VFM_NFT_FORWARD 标记规则"
         else
-            echo "FORWARD 鏀捐瑙勫垯锛氭湭妫€娴嬪埌 VFM_NFT_FORWARD 鏍囪瑙勫垯"
+            echo "FORWARD 放行规则：未检测到 VFM_NFT_FORWARD 标记规则"
         fi
     else
-        echo "FORWARD 鏀捐瑙勫垯锛氭湭瀹夎 iptables锛屾棤娉曟鏌�"
+        echo "FORWARD 放行规则：未安装 iptables，无法检查"
     fi
 
     test_target_port "$PROTO" "$REMOTE_HOST" "$REMOTE_PORT"
 
     echo ""
-    echo "鎻愮ず锛歯ftables 妯″紡涓嶄細鍑虹幇 LISTEN 鐩戝惉锛岃繖鏄甯哥幇璞°€�"
-    echo "鎻愮ず锛氬鏋滄祴璇曚粛澶辫触锛岃妫€鏌ヤ簯鏈嶅姟鍣ㄥ畨鍏ㄧ粍鏄惁鏀捐鐩戝惉绔彛 ${LISTEN_PORT}銆�"
+    echo "提示：nftables 模式不会出现 LISTEN 监听，这是正常现象。"
+    echo "提示：如果测试仍失败，请检查云服务器安全组是否放行监听端口 ${LISTEN_PORT}。"
 }
 
 run_forward_test() {
@@ -556,32 +556,32 @@ get_service_status() {
             SERVICE_ID="realm-nft-forward"
             ;;
         *)
-            echo "鏈煡"
+            echo "未知"
             return 0
             ;;
     esac
 
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
         if [ ! -f "$SYSTEMD_FILE" ]; then
-            echo "鏈畨瑁�"
+            echo "未安装"
             return 0
         fi
 
         if systemctl is-active --quiet "$SERVICE_ID" >/dev/null 2>&1; then
-            echo "杩愯涓�"
+            echo "运行中"
         else
-            echo "宸插仠姝�"
+            echo "已停止"
         fi
     else
         if [ ! -f "$OPENRC_FILE" ]; then
-            echo "鏈畨瑁�"
+            echo "未安装"
             return 0
         fi
 
         if rc-service "$SERVICE_ID" status >/dev/null 2>&1; then
-            echo "杩愯涓�"
+            echo "运行中"
         else
-            echo "宸插仠姝�"
+            echo "已停止"
         fi
     fi
 }
@@ -593,13 +593,13 @@ show_main_status() {
     NFT_COUNT="$(count_rule_file "$NFT_RULES")"
 
     print_line
-    echo " VPS 杞彂绠＄悊鍣�"
+    echo " VPS 转发管理器"
     print_line
-    echo "realm 鏈嶅姟鐘舵€�      锛�$REALM_STATUS"
-    echo "nftables 鏈嶅姟鐘舵€�   锛�$NFT_STATUS"
-    echo "realm 瑙勫垯鏁伴噺      锛�${REALM_COUNT} 鏉�"
-    echo "nftables 瑙勫垯鏁伴噺   锛�${NFT_COUNT} 鏉�"
-    echo "蹇嵎鍛戒护            锛歷fm"
+    echo "realm 服务状态      ：$REALM_STATUS"
+    echo "nftables 服务状态   ：$NFT_STATUS"
+    echo "realm 规则数量      ：${REALM_COUNT} 条"
+    echo "nftables 规则数量   ：${NFT_COUNT} 条"
+    echo "快捷命令            ：vfm"
     print_line
 }
 
@@ -607,14 +607,14 @@ select_service_target() {
     SERVICE_TARGET=""
 
     echo ""
-    echo "璇烽€夋嫨鏈嶅姟锛�"
-    echo "1) realm 鏈嶅姟"
-    echo "2) nftables 鏈嶅姟"
-    echo "3) realm + nftables 鍏ㄩ儴鏈嶅姟"
-    echo "0) 杩斿洖涓婁竴姝�"
+    echo "请选择服务："
+    echo "1) realm 服务"
+    echo "2) nftables 服务"
+    echo "3) realm + nftables 全部服务"
+    echo "0) 返回上一步"
     echo ""
 
-    read_input "璇疯緭鍏ラ€夐」 [0-3]: " SERVICE_CHOICE
+    read_input "请输入选项 [0-3]: " SERVICE_CHOICE
 
     case "$SERVICE_CHOICE" in
         1)
@@ -630,7 +630,7 @@ select_service_target() {
             return 1
             ;;
         *)
-            echo "閿欒锛氭棤鏁堥€夐」銆�"
+            echo "错误：无效选项。"
             return 1
             ;;
     esac
@@ -675,17 +675,17 @@ start_one_service() {
             SERVICE_LABEL="nftables"
             ;;
         *)
-            echo "閿欒锛氭湭鐭ユ湇鍔°€�"
+            echo "错误：未知服务。"
             return 0
             ;;
     esac
 
     if ! service_file_exists "$SERVICE_NAME"; then
-        echo "鎻愮ず锛�${SERVICE_LABEL} 鏈嶅姟鏈畨瑁咃紝璇峰厛鏂板缓瀵瑰簲杞彂瑙勫垯銆�"
+        echo "提示：${SERVICE_LABEL} 服务未安装，请先新建对应转发规则。"
         return 0
     fi
 
-    echo "姝ｅ湪寮€鍚� ${SERVICE_LABEL} 鏈嶅姟..."
+    echo "正在开启 ${SERVICE_LABEL} 服务..."
 
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
         systemctl enable --now "$SERVICE_ID"
@@ -694,7 +694,7 @@ start_one_service() {
         rc-service "$SERVICE_ID" start
     fi
 
-    echo "${SERVICE_LABEL} 鏈嶅姟鐘舵€侊細$(get_service_status "$SERVICE_NAME")"
+    echo "${SERVICE_LABEL} 服务状态：$(get_service_status "$SERVICE_NAME")"
 }
 
 stop_one_service() {
@@ -710,17 +710,17 @@ stop_one_service() {
             SERVICE_LABEL="nftables"
             ;;
         *)
-            echo "閿欒锛氭湭鐭ユ湇鍔°€�"
+            echo "错误：未知服务。"
             return 0
             ;;
     esac
 
     if ! service_file_exists "$SERVICE_NAME"; then
-        echo "鎻愮ず锛�${SERVICE_LABEL} 鏈嶅姟鏈畨瑁呫€�"
+        echo "提示：${SERVICE_LABEL} 服务未安装。"
         return 0
     fi
 
-    echo "姝ｅ湪鍋滄 ${SERVICE_LABEL} 鏈嶅姟..."
+    echo "正在停止 ${SERVICE_LABEL} 服务..."
 
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
         systemctl stop "$SERVICE_ID"
@@ -728,7 +728,7 @@ stop_one_service() {
         rc-service "$SERVICE_ID" stop
     fi
 
-    echo "${SERVICE_LABEL} 鏈嶅姟鐘舵€侊細$(get_service_status "$SERVICE_NAME")"
+    echo "${SERVICE_LABEL} 服务状态：$(get_service_status "$SERVICE_NAME")"
 }
 
 restart_one_service() {
@@ -744,17 +744,17 @@ restart_one_service() {
             SERVICE_LABEL="nftables"
             ;;
         *)
-            echo "閿欒锛氭湭鐭ユ湇鍔°€�"
+            echo "错误：未知服务。"
             return 0
             ;;
     esac
 
     if ! service_file_exists "$SERVICE_NAME"; then
-        echo "鎻愮ず锛�${SERVICE_LABEL} 鏈嶅姟鏈畨瑁咃紝璇峰厛鏂板缓瀵瑰簲杞彂瑙勫垯銆�"
+        echo "提示：${SERVICE_LABEL} 服务未安装，请先新建对应转发规则。"
         return 0
     fi
 
-    echo "姝ｅ湪閲嶅惎 ${SERVICE_LABEL} 鏈嶅姟..."
+    echo "正在重启 ${SERVICE_LABEL} 服务..."
 
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
         systemctl restart "$SERVICE_ID"
@@ -762,7 +762,7 @@ restart_one_service() {
         rc-service "$SERVICE_ID" restart
     fi
 
-    echo "${SERVICE_LABEL} 鏈嶅姟鐘舵€侊細$(get_service_status "$SERVICE_NAME")"
+    echo "${SERVICE_LABEL} 服务状态：$(get_service_status "$SERVICE_NAME")"
 }
 
 show_one_service_log() {
@@ -780,49 +780,49 @@ show_one_service_log() {
             RULE_FILE="$NFT_RULES"
             ;;
         *)
-            echo "閿欒锛氭湭鐭ユ湇鍔°€�"
+            echo "错误：未知服务。"
             return 0
             ;;
     esac
 
     echo ""
     print_line
-    echo " ${SERVICE_LABEL} 鏈嶅姟鏃ュ織 / 鐘舵€�"
+    echo " ${SERVICE_LABEL} 服务日志 / 状态"
     print_line
-    echo "鏈嶅姟鐘舵€侊細$(get_service_status "$SERVICE_NAME")"
+    echo "服务状态：$(get_service_status "$SERVICE_NAME")"
     echo ""
 
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
         if service_file_exists "$SERVICE_NAME"; then
             journalctl -u "$SERVICE_ID" -n 80 --no-pager || true
         else
-            echo "鎻愮ず锛�${SERVICE_LABEL} 鏈嶅姟鏈畨瑁呫€�"
+            echo "提示：${SERVICE_LABEL} 服务未安装。"
         fi
     else
         if service_file_exists "$SERVICE_NAME"; then
             rc-service "$SERVICE_ID" status || true
         else
-            echo "鎻愮ず锛�${SERVICE_LABEL} 鏈嶅姟鏈畨瑁呫€�"
+            echo "提示：${SERVICE_LABEL} 服务未安装。"
         fi
 
         echo ""
-        echo "OpenRC 绯荤粺娌℃湁缁熶竴 journalctl 鏃ュ織銆�"
+        echo "OpenRC 系统没有统一 journalctl 日志。"
 
         if [ -f /var/log/messages ]; then
             echo ""
-            echo "鏈€杩戠郴缁熸棩蹇楋細"
+            echo "最近系统日志："
             tail -n 80 /var/log/messages || true
         else
-            echo "鏈壘鍒� /var/log/messages銆�"
+            echo "未找到 /var/log/messages。"
         fi
     fi
 
     echo ""
-    echo "褰撳墠瑙勫垯鏂囦欢锛�$RULE_FILE"
+    echo "当前规则文件：$RULE_FILE"
     if [ -f "$RULE_FILE" ] && [ -s "$RULE_FILE" ]; then
         cat "$RULE_FILE"
     else
-        echo "鏆傛棤瑙勫垯銆�"
+        echo "暂无规则。"
     fi
 }
 
@@ -830,16 +830,16 @@ service_manage_menu() {
     while true; do
         echo ""
         print_line
-        echo " 鏈嶅姟绠＄悊"
+        echo " 服务管理"
         print_line
-        echo "1) 寮€鍚湇鍔�"
-        echo "2) 鍋滄鏈嶅姟"
-        echo "3) 閲嶅惎鏈嶅姟"
-        echo "4) 鏌ョ湅鏃ュ織"
-        echo "0) 杩斿洖涓昏彍鍗�"
+        echo "1) 开启服务"
+        echo "2) 停止服务"
+        echo "3) 重启服务"
+        echo "4) 查看日志"
+        echo "0) 返回主菜单"
         echo ""
 
-        read_input "璇疯緭鍏ラ€夐」 [0-4]: " SERVICE_ACTION
+        read_input "请输入选项 [0-4]: " SERVICE_ACTION
 
         case "$SERVICE_ACTION" in
             1)
@@ -878,7 +878,7 @@ service_manage_menu() {
                 return 0
                 ;;
             *)
-                echo "閿欒锛氭棤鏁堥€夐」銆�"
+                echo "错误：无效选项。"
                 ;;
         esac
     done
@@ -886,17 +886,17 @@ service_manage_menu() {
 
 ask_action() {
     show_main_status
-    echo " 涓昏彍鍗�"
+    echo " 主菜单"
     print_line
-    echo "1) 鏂板缓杞彂瑙勫垯"
-    echo "2) 鏌ョ湅鐩墠杞彂瑙勫垯"
-    echo "3) 鍒犻櫎杞彂瑙勫垯"
-    echo "4) 鏈嶅姟绠＄悊"
-    echo "5) 鍗歌浇鑴氭湰瀹夎鐨勫叏閮ㄥ唴瀹�"
-    echo "0) 閫€鍑鸿剼鏈�"
+    echo "1) 新建转发规则"
+    echo "2) 查看目前转发规则"
+    echo "3) 删除转发规则"
+    echo "4) 服务管理"
+    echo "5) 卸载脚本安装的全部内容"
+    echo "0) 退出脚本"
     echo ""
 
-    read_input "璇疯緭鍏ラ€夐」 [0-5]: " ACTION_CHOICE
+    read_input "请输入选项 [0-5]: " ACTION_CHOICE
 
     case "$ACTION_CHOICE" in
         1) ACTION="create" ;;
@@ -904,31 +904,31 @@ ask_action() {
         3) ACTION="delete" ;;
         4) ACTION="service" ;;
         5) ACTION="uninstall" ;;
-        0) echo "宸查€€鍑鸿剼鏈€�"; exit 0 ;;
-        *) echo "閿欒锛氭棤鏁堥€夐」銆�"; ACTION=""; return 1 ;;
+        0) echo "已退出脚本。"; exit 0 ;;
+        *) echo "错误：无效选项。"; ACTION=""; return 1 ;;
     esac
     return 0
 }
 
 ask_mode() {
     echo ""
-    echo "[4/10] 璇烽€夋嫨杞彂鏂瑰紡"
+    echo "[4/10] 请选择转发方式"
     echo "--------------------------------------"
-    echo "1) realm    - 鐢ㄦ埛鎬佽浆鍙戯紝鏀寔鍩熷悕/IP锛岄€傚悎鍔ㄦ€佸煙鍚�"
-    echo "2) nftables - 鍐呮牳绾� DNAT/SNAT锛屾€ц兘鏇村ソ锛岀洰鏍囧繀椤诲浐瀹欼Pv4"
-    echo "0) 杩斿洖涓昏彍鍗�"
+    echo "1) realm    - 用户态转发，支持域名/IP，适合动态域名"
+    echo "2) nftables - 内核级 DNAT/SNAT，性能更好，目标必须固定IPv4"
+    echo "0) 返回主菜单"
     echo "--------------------------------------"
 
-    read_input "璇疯緭鍏ラ€夐」 [0-2]: " MODE_CHOICE
+    read_input "请输入选项 [0-2]: " MODE_CHOICE
 
     case "$MODE_CHOICE" in
         1) MODE="realm" ;;
         2) MODE="nftables" ;;
         0) MODE=""; return 1 ;;
-        *) echo "閿欒锛氭棤鏁堥€夐」銆�"; MODE=""; return 1 ;;
+        *) echo "错误：无效选项。"; MODE=""; return 1 ;;
     esac
 
-    echo "宸查€夋嫨锛�$MODE"
+    echo "已选择：$MODE"
     return 0
 }
 
@@ -950,11 +950,11 @@ check_duplicate_rule() {
     RULE_PORT="$2"
 
     if check_duplicate_rule_in_file "$REALM_RULES" "$RULE_PROTO" "$RULE_PORT"; then
-        echo "閿欒锛氬凡瀛樺湪 ${RULE_PROTO} 鍗忚鐩戝惉绔彛 ${RULE_PORT} 鐨� realm 瑙勫垯銆�"
+        echo "错误：已存在 ${RULE_PROTO} 协议监听端口 ${RULE_PORT} 的 realm 规则。"
         return 1
     fi
     if check_duplicate_rule_in_file "$NFT_RULES" "$RULE_PROTO" "$RULE_PORT"; then
-        echo "閿欒锛氬凡瀛樺湪 ${RULE_PROTO} 鍗忚鐩戝惉绔彛 ${RULE_PORT} 鐨� nftables 瑙勫垯銆�"
+        echo "错误：已存在 ${RULE_PROTO} 协议监听端口 ${RULE_PORT} 的 nftables 规则。"
         return 1
     fi
     return 0
@@ -979,58 +979,58 @@ ask_forward_config() {
         case "$STEP" in
             1)
                 echo ""
-                echo "[5/10] 閰嶇疆杞彂淇℃伅"
+                echo "[5/10] 配置转发信息"
                 echo "--------------------------------------"
-                read_input "绗竴姝� - 璇疯緭鍏ユ湰鏈虹洃鍚鍙� (鍥炶溅榛樿闅忔満 20000-65000锛岃緭鍏�0杩斿洖): " LISTEN_PORT
+                read_input "第一步 - 请输入本机监听端口 (回车默认随机 20000-65000，输入0返回): " LISTEN_PORT
 
                 if [ "$LISTEN_PORT" = "0" ]; then return 1; fi
                 if [ -z "$LISTEN_PORT" ]; then
                     LISTEN_PORT="$(generate_random_port)"
-                    echo "宸查殢鏈虹敓鎴愮洃鍚鍙ｏ細$LISTEN_PORT"
+                    echo "已随机生成监听端口：$LISTEN_PORT"
                 fi
                 if ! is_valid_port "$LISTEN_PORT"; then
-                    echo "閿欒锛氱洃鍚鍙ｅ繀椤绘槸 1 鍒� 65535 涔嬮棿鐨勬暟瀛椼€�"
+                    echo "错误：监听端口必须是 1 到 65535 之间的数字。"
                     continue
                 fi
                 STEP=2
                 ;;
             2)
-                read_input "绗簩姝� - 璇疯緭鍏ョ洰鏍囧煙鍚嶆垨 IP (杈撳叆0杩斿洖): " REMOTE_HOST
+                read_input "第二步 - 请输入目标域名或 IP (输入0返回): " REMOTE_HOST
 
                 if [ "$REMOTE_HOST" = "0" ]; then STEP=1; continue; fi
                 if [ -z "$REMOTE_HOST" ]; then
-                    echo "閿欒锛氱洰鏍囧煙鍚嶆垨 IP 涓嶈兘涓虹┖銆�"
+                    echo "错误：目标域名或 IP 不能为空。"
                     continue
                 fi
                 STEP=3
                 ;;
             3)
-                read_input "绗笁姝� - 璇疯緭鍏ョ洰鏍囩鍙� (杈撳叆0杩斿洖): " REMOTE_PORT
+                read_input "第三步 - 请输入目标端口 (输入0返回): " REMOTE_PORT
 
                 if [ "$REMOTE_PORT" = "0" ]; then STEP=2; continue; fi
                 if ! is_valid_port "$REMOTE_PORT"; then
-                    echo "閿欒锛氱洰鏍囩鍙ｅ繀椤绘槸 1 鍒� 65535 涔嬮棿鐨勬暟瀛椼€�"
+                    echo "错误：目标端口必须是 1 到 65535 之间的数字。"
                     continue
                 fi
                 STEP=4
                 ;;
             4)
                 echo ""
-                echo "璇烽€夋嫨鍗忚锛�"
+                echo "请选择协议："
                 echo "1) TCP"
                 echo "2) UDP"
                 echo "3) TCP + UDP"
-                echo "0) 杩斿洖涓婁竴姝�"
+                echo "0) 返回上一步"
                 echo ""
 
-                read_input "璇疯緭鍏ラ€夐」 [鍥炶溅榛樿 TCP]: " PROTO_CHOICE
+                read_input "请输入选项 [回车默认 TCP]: " PROTO_CHOICE
 
                 case "$PROTO_CHOICE" in
                     ""|1) PROTO="tcp" ;;
                     2) PROTO="udp" ;;
                     3) PROTO="both" ;;
                     0) STEP=3; continue ;;
-                    *) echo "閿欒锛氭棤鏁堝崗璁€夐」銆�"; continue ;;
+                    *) echo "错误：无效协议选项。"; continue ;;
                 esac
 
                 format_remote_addr "$REMOTE_HOST" "$REMOTE_PORT"
@@ -1038,9 +1038,9 @@ ask_forward_config() {
                 if [ "$MODE" = "nftables" ]; then
                     if ! is_ipv4 "$REMOTE_HOST"; then
                         echo ""
-                        echo "閿欒锛氬綋鍓嶈剼鏈殑 nftables 妯″紡浠呮敮鎸佺洰鏍囦负鍥哄畾 IPv4銆�"
-                        echo "鍘熷洜锛歯ftables DNAT 瑙勫垯搴斾娇鐢ㄥ浐瀹� IP锛屼笉閫傚悎鐩存帴浣跨敤鍔ㄦ€佸煙鍚嶃€�"
-                        echo "濡傛灉浣犵殑鐩爣鏄煙鍚嶆垨 IPv6锛岃閫夋嫨 realm 妯″紡銆�"
+                        echo "错误：当前脚本的 nftables 模式仅支持目标为固定 IPv4。"
+                        echo "原因：nftables DNAT 规则应使用固定 IP，不适合直接使用动态域名。"
+                        echo "如果你的目标是域名或 IPv6，请选择 realm 模式。"
                         STEP=2
                         continue
                     fi
@@ -1059,17 +1059,17 @@ ask_forward_config() {
                     if is_ip_address "$REMOTE_HOST"; then
                         ENABLE_DNS_REFRESH="no"
                         echo ""
-                        echo "鎻愮ず锛氭娴嬪埌鐩爣鏄� IP 鍦板潃锛屽凡璺宠繃 DNS 瀹氭椂鍒锋柊閰嶇疆銆�"
+                        echo "提示：检测到目标是 IP 地址，已跳过 DNS 定时刷新配置。"
                     else
                         echo ""
-                        echo "鎻愮ず锛氭娴嬪埌鐩爣涓哄煙鍚嶃€�"
-                        echo "鏄惁鍚敤 DNS 鑷姩鍒锋柊锛�(鍩熷悕 IP 鍙樺寲鏃惰嚜鍔ㄩ噸鍚� realm)"
-                        echo "Y) 鍚敤"
-                        echo "n) 涓嶅惎鐢�"
-                        echo "0) 杩斿洖涓婁竴姝�"
+                        echo "提示：检测到目标为域名。"
+                        echo "是否启用 DNS 自动刷新？(域名 IP 变化时自动重启 realm)"
+                        echo "Y) 启用"
+                        echo "n) 不启用"
+                        echo "0) 返回上一步"
                         echo ""
 
-                        read_input "璇疯緭鍏ラ€夐」 [鍥炶溅榛樿鍚敤锛孻/n/0]: " DNS_CONFIRM
+                        read_input "请输入选项 [回车默认启用，Y/n/0]: " DNS_CONFIRM
 
                         case "$DNS_CONFIRM" in
                             0)
@@ -1082,15 +1082,15 @@ ask_forward_config() {
                             ""|y|Y|yes|YES|*)
                                 ENABLE_DNS_REFRESH="yes"
                                 while true; do
-                                    read_input "璇疯緭鍏� DNS 鍒锋柊闂撮殧鍒嗛挓鏁� [鍥炶溅榛樿 5锛岃緭鍏� 0 杩斿洖]: " DNS_REFRESH_INTERVAL_INPUT
+                                    read_input "请输入 DNS 刷新间隔分钟数 [回车默认 5，输入 0 返回]: " DNS_REFRESH_INTERVAL_INPUT
 
                                     if [ "$DNS_REFRESH_INTERVAL_INPUT" = "0" ]; then STEP=4; continue 2; fi
                                     if [ -n "$DNS_REFRESH_INTERVAL_INPUT" ]; then DNS_REFRESH_INTERVAL="$DNS_REFRESH_INTERVAL_INPUT"; fi
 
                                     case "$DNS_REFRESH_INTERVAL" in
-                                        ''|*[!0-9]*) echo "閿欒锛氬繀椤绘槸鏁板瓧銆�"; continue ;;
+                                        ''|*[!0-9]*) echo "错误：必须是数字。"; continue ;;
                                     esac
-                                    if [ "$DNS_REFRESH_INTERVAL" -lt 1 ]; then echo "閿欒锛氫笉鑳藉皬浜�1銆�"; continue; fi
+                                    if [ "$DNS_REFRESH_INTERVAL" -lt 1 ]; then echo "错误：不能小于1。"; continue; fi
                                     break
                                 done
                                 ;;
@@ -1102,24 +1102,24 @@ ask_forward_config() {
             6)
                 echo ""
                 print_line
-                echo " 閰嶇疆纭"
+                echo " 配置确认"
                 print_line
-                echo "杞彂鏂瑰紡 锛�$MODE"
-                echo "鐩戝惉鍦板潃 锛�0.0.0.0:${LISTEN_PORT}"
-                echo "鐩爣鍦板潃 锛�${REMOTE_ADDR}"
-                echo "鍗忚     锛�${PROTO}"
+                echo "转发方式 ：$MODE"
+                echo "监听地址 ：0.0.0.0:${LISTEN_PORT}"
+                echo "目标地址 ：${REMOTE_ADDR}"
+                echo "协议     ：${PROTO}"
 
                 if [ "$MODE" = "realm" ]; then
-                    echo "DNS 鍒锋柊 锛�${ENABLE_DNS_REFRESH}"
+                    echo "DNS 刷新 ：${ENABLE_DNS_REFRESH}"
                 fi
 
                 echo ""
-                read_input "纭瀹夎锛焄鍥炶溅榛樿瀹夎锛孻/n/0杩斿洖]: " CONFIRM_INSTALL
+                read_input "确认安装？[回车默认安装，Y/n/0返回]: " CONFIRM_INSTALL
 
                 case "$CONFIRM_INSTALL" in
                     ""|y|Y|yes|YES) return 0 ;;
                     0) STEP=5; continue ;;
-                    *) echo "宸插彇娑堟湰娆℃柊寤恒€�"; return 1 ;;
+                    *) echo "已取消本次新建。"; return 1 ;;
                 esac
                 ;;
         esac
@@ -1184,32 +1184,32 @@ cleanup_dns_refresh() {
 
 install_realm_binary() {
     echo ""
-    echo "[6/10] 姝ｅ湪瀹夎 realm..."
+    echo "[6/10] 正在安装 realm..."
 
     TMP_DIR="$(mktemp -d)"
     cd "$TMP_DIR"
 
     REALM_URL="https://github.com/zhboner/realm/releases/latest/download/realm-${REALM_ARCH}.tar.gz"
-    echo "涓嬭浇鍦板潃锛�$REALM_URL"
+    echo "下载地址：$REALM_URL"
 
     if ! curl -L --fail --retry 3 --connect-timeout 15 -o realm.tar.gz "$REALM_URL"; then
-        echo "閿欒锛歳ealm 涓嬭浇澶辫触锛岃妫€鏌ョ綉缁滄垨鏋舵瀯鏄惁瀛樺湪銆�"
+        echo "错误：realm 下载失败，请检查网络或架构是否存在。"
         cd /; rm -rf "$TMP_DIR"; exit 1
     fi
 
     if ! tar -xzf realm.tar.gz; then
-        echo "閿欒锛歳ealm 鍘嬬缉鍖呰В鍘嬪け璐ャ€�"
+        echo "错误：realm 压缩包解压失败。"
         cd /; rm -rf "$TMP_DIR"; exit 1
     fi
 
     if [ ! -f realm ]; then
-        echo "閿欒锛氭湭鎵惧埌 realm 鍙墽琛屾枃浠躲€�"
+        echo "错误：未找到 realm 可执行文件。"
         cd /; rm -rf "$TMP_DIR"; exit 1
     fi
 
     install -m 755 realm "$REALM_BIN"
     cd /; rm -rf "$TMP_DIR"
-    echo "realm 宸叉垚鍔熷畨瑁呭埌锛�$REALM_BIN"
+    echo "realm 已成功安装到：$REALM_BIN"
 }
 
 append_rule_to_file() {
@@ -1305,7 +1305,7 @@ cleanup_vfm_forward_rules() {
 
 apply_vfm_forward_rules() {
     if ! command -v iptables >/dev/null 2>&1; then
-        echo "璀﹀憡锛氭湭鎵惧埌 iptables锛屾棤娉曡嚜鍔ㄦ坊鍔� FORWARD 鏀捐瑙勫垯銆�"
+        echo "警告：未找到 iptables，无法自动添加 FORWARD 放行规则。"
         return 0
     fi
 
@@ -1335,7 +1335,7 @@ apply_vfm_forward_rules() {
 if [ ! -f "$RULES" ] || [ ! -s "$RULES" ]; then
     nft delete table ip realm_forward >/dev/null 2>&1 || true
     cleanup_vfm_forward_rules
-    echo "娌℃湁 nftables 瑙勫垯锛屽凡娓呯悊 realm_forward 琛ㄥ拰 FORWARD 鏀捐瑙勫垯銆�"
+    echo "没有 nftables 规则，已清理 realm_forward 表和 FORWARD 放行规则。"
     exit 0
 fi
 
@@ -1368,7 +1368,7 @@ apply_nft_rules() {
     fi
 
     if ! "$NFT_APPLY_SCRIPT"; then
-        echo "閿欒锛歯ftables 瑙勫垯搴旂敤澶辫触锛岃妫€鏌ヤ笂鏂硅緭鍑恒€�"
+        echo "错误：nftables 规则应用失败，请检查上方输出。"
         return 1
     fi
 
@@ -1377,14 +1377,14 @@ apply_nft_rules() {
 
 add_realm_rule() {
     echo ""
-    echo "[7/10] 姝ｅ湪杩藉姞 realm 瑙勫垯..."
+    echo "[7/10] 正在追加 realm 规则..."
     append_rule_to_file "$REALM_RULES"
     regenerate_realm_config
 }
 
 add_nft_rule() {
     echo ""
-    echo "[7/10] 姝ｅ湪杩藉姞 nftables 瑙勫垯..."
+    echo "[7/10] 正在追加 nftables 规则..."
     append_rule_to_file "$NFT_RULES"
     write_nft_apply_script
     apply_nft_rules
@@ -1440,7 +1440,7 @@ EOF
 
 install_realm_service() {
     echo ""
-    echo "[8/10] 姝ｅ湪鍒涘缓 realm 绯荤粺鏈嶅姟..."
+    echo "[8/10] 正在创建 realm 系统服务..."
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
         install_realm_service_systemd
     else
@@ -1546,9 +1546,9 @@ install_dns_refresh_openrc() {
 
 configure_dns_refresh() {
     echo ""
-    echo "[9/10] 姝ｅ湪閰嶇疆 DNS 鑷姩鍒锋柊..."
+    echo "[9/10] 正在配置 DNS 自动刷新..."
     if [ "$MODE" != "realm" ] || [ "$ENABLE_DNS_REFRESH" != "yes" ]; then
-        echo "DNS 鑷姩鍒锋柊鏈惎鐢ㄣ€�"
+        echo "DNS 自动刷新未启用。"
         return
     fi
 
@@ -1559,12 +1559,12 @@ configure_dns_refresh() {
     else
         install_dns_refresh_openrc
     fi
-    echo "DNS 鑷姩鍒锋柊宸叉垚鍔熷惎鐢ㄣ€�"
+    echo "DNS 自动刷新已成功启用。"
 }
 
 enable_ip_forward() {
     echo ""
-    echo "姝ｅ湪寮€鍚� IPv4 鍐呮牳杞彂..."
+    echo "正在开启 IPv4 内核转发..."
     sysctl -w net.ipv4.ip_forward=1 >/dev/null
     if grep -q '^net.ipv4.ip_forward' /etc/sysctl.conf 2>/dev/null; then
         sed -i 's/^net.ipv4.ip_forward.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
@@ -1627,7 +1627,7 @@ EOF
 
 install_nft_service() {
     echo ""
-    echo "[8/10] 姝ｅ湪鍒涘缓 nftables 杞彂鏈嶅姟..."
+    echo "[8/10] 正在创建 nftables 转发服务..."
     if [ "$SERVICE_MANAGER" = "systemd" ]; then
         install_nft_service_systemd
     else
@@ -1652,31 +1652,31 @@ install_nftables_mode() {
 print_rule_file_numbered() {
     RULE_FILE="$1"
     if [ ! -f "$RULE_FILE" ] || [ ! -s "$RULE_FILE" ]; then
-        echo "  鏆傛棤瑙勫垯銆�"
+        echo "  暂无规则。"
         return
     fi
-    awk -F'|' '{printf "  %d. 鍗忚锛�%s | 鐩戝惉锛�0.0.0.0:%s | 鐩爣锛�%s:%s\n", NR, $1, $2, $3, $4}' "$RULE_FILE"
+    awk -F'|' '{printf "  %d. 协议：%s | 监听：0.0.0.0:%s | 目标：%s:%s\n", NR, $1, $2, $3, $4}' "$RULE_FILE"
 }
 
 view_current_rules() {
     while true; do
         echo ""
         print_line
-        echo " 褰撳墠鑴氭湰绠＄悊鐨勫叏閮ㄨ浆鍙戣鍒�"
+        echo " 当前脚本管理的全部转发规则"
         print_line
         echo ""
 
-        echo "銆� realm 瑙勫垯 銆�"
+        echo "【 realm 规则 】"
         echo "--------------------------------------"
         print_rule_file_numbered "$REALM_RULES"
         echo ""
 
-        echo "銆� nftables 瑙勫垯 銆�"
+        echo "【 nftables 规则 】"
         echo "--------------------------------------"
         print_rule_file_numbered "$NFT_RULES"
         echo ""
 
-        read_input "杈撳叆 0 杩斿洖涓昏彍鍗�: " VIEW_CHOICE
+        read_input "输入 0 返回主菜单: " VIEW_CHOICE
 
         if [ "$VIEW_CHOICE" = "0" ]; then
             return 0
@@ -1686,10 +1686,10 @@ view_current_rules() {
 
 delete_all_rules() {
     echo ""
-    confirm_input "纭鍒犻櫎鍏ㄩ儴瑙勫垯锛焄y/N/0杩斿洖锛屽洖杞﹂粯璁や笉鍒犻櫎]: " CONFIRM_DELETE_ALL
+    confirm_input "确认删除全部规则？[y/N/0返回，回车默认不删除]: " CONFIRM_DELETE_ALL
 
     if [ "$CONFIRM_DELETE_ALL" != "yes" ]; then
-        echo "宸插彇娑堝垹闄ゃ€�"
+        echo "已取消删除。"
         return
     fi
 
@@ -1704,14 +1704,14 @@ delete_all_rules() {
     fi
 
     cleanup_vfm_forward_rules
-    echo "鉁� 鍏ㄩ儴杞彂瑙勫垯宸插垹闄ゃ€�"
+    echo "✅ 全部转发规则已删除。"
 }
 
 delete_current_rules() {
     while true; do
         echo ""
         print_line
-        echo " 鍒犻櫎杞彂瑙勫垯"
+        echo " 删除转发规则"
         print_line
         echo ""
 
@@ -1729,32 +1729,32 @@ delete_current_rules() {
 
         TOTAL_RULES=$((REALM_COUNT + NFT_COUNT))
 
-        echo "銆� realm 瑙勫垯 銆�"
+        echo "【 realm 规则 】"
         echo "--------------------------------------"
         if [ "$REALM_COUNT" -gt 0 ]; then
-            awk -F'|' -v start="$START_IDX" '{printf "  [%d] 鍗忚锛�%s | 鐩戝惉锛�0.0.0.0:%s | 鐩爣锛�%s:%s\n", start+NR-1, $1, $2, $3, $4}' "$REALM_RULES"
+            awk -F'|' -v start="$START_IDX" '{printf "  [%d] 协议：%s | 监听：0.0.0.0:%s | 目标：%s:%s\n", start+NR-1, $1, $2, $3, $4}' "$REALM_RULES"
             START_IDX=$((START_IDX + REALM_COUNT))
         else
-            echo "  鏆傛棤瑙勫垯銆�"
+            echo "  暂无规则。"
         fi
 
         echo ""
-        echo "銆� nftables 瑙勫垯 銆�"
+        echo "【 nftables 规则 】"
         echo "--------------------------------------"
         if [ "$NFT_COUNT" -gt 0 ]; then
-            awk -F'|' -v start="$START_IDX" '{printf "  [%d] 鍗忚锛�%s | 鐩戝惉锛�0.0.0.0:%s | 鐩爣锛�%s:%s\n", start+NR-1, $1, $2, $3, $4}' "$NFT_RULES"
+            awk -F'|' -v start="$START_IDX" '{printf "  [%d] 协议：%s | 监听：0.0.0.0:%s | 目标：%s:%s\n", start+NR-1, $1, $2, $3, $4}' "$NFT_RULES"
         else
-            echo "  鏆傛棤瑙勫垯銆�"
+            echo "  暂无规则。"
         fi
 
         echo ""
-        echo "鎿嶄綔鑿滃崟锛�"
-        echo "  [鏁板瓧缂栧彿] 鍒犻櫎瀵瑰簲鍗曟潯瑙勫垯"
-        echo "  [a]        鍒犻櫎鍏ㄩ儴瑙勫垯"
-        echo "  [0]        杩斿洖涓昏彍鍗�"
+        echo "操作菜单："
+        echo "  [数字编号] 删除对应单条规则"
+        echo "  [a]        删除全部规则"
+        echo "  [0]        返回主菜单"
         echo ""
 
-        read_input "璇疯緭鍏ラ€夐」: " DEL_CHOICE
+        read_input "请输入选项: " DEL_CHOICE
 
         case "$DEL_CHOICE" in
             0) return 0 ;;
@@ -1763,13 +1763,13 @@ delete_current_rules() {
                 continue
                 ;;
             ''|*[!0-9]*)
-                echo "閿欒锛氭棤鏁堥€夐」鎴栫紪鍙枫€�"
+                echo "错误：无效选项或编号。"
                 continue
                 ;;
         esac
 
         if [ "$DEL_CHOICE" -lt 1 ] || [ "$DEL_CHOICE" -gt "$TOTAL_RULES" ]; then
-            echo "閿欒锛氳緭鍏ョ紪鍙疯秴鍑鸿寖鍥淬€�"
+            echo "错误：输入编号超出范围。"
             continue
         fi
 
@@ -1790,15 +1790,15 @@ delete_current_rules() {
         RULE_PORT="$(echo "$RULE_LINE" | awk -F'|' '{print $4}')"
 
         echo ""
-        echo "鍗冲皢鍒犻櫎浠ヤ笅 [${TARGET_NAME}] 瑙勫垯锛�"
-        echo "鍗忚锛�$RULE_PROTO | 鐩戝惉锛�0.0.0.0:$RULE_LISTEN | 鐩爣锛�$RULE_HOST:$RULE_PORT"
+        echo "即将删除以下 [${TARGET_NAME}] 规则："
+        echo "协议：$RULE_PROTO | 监听：0.0.0.0:$RULE_LISTEN | 目标：$RULE_HOST:$RULE_PORT"
         echo ""
 
-        confirm_input "纭鍒犻櫎锛焄y/N/0杩斿洖锛屽洖杞﹂粯璁や笉鍒犻櫎]: " CONFIRM_DELETE
+        confirm_input "确认删除？[y/N/0返回，回车默认不删除]: " CONFIRM_DELETE
 
         if [ "$CONFIRM_DELETE" = "back" ]; then continue; fi
         if [ "$CONFIRM_DELETE" != "yes" ]; then
-            echo "宸插彇娑堝垹闄ゃ€�"
+            echo "已取消删除。"
             continue
         fi
 
@@ -1826,22 +1826,22 @@ delete_current_rules() {
             fi
         fi
 
-        echo "鉁� 宸叉垚鍔熷垹闄よ瑙勫垯銆�"
+        echo "✅ 已成功删除该规则。"
     done
 }
 
 uninstall_all() {
     echo ""
     print_line
-    echo " 鍗歌浇鑴氭湰瀹夎鐨勫叏閮ㄥ唴瀹�"
+    echo " 卸载脚本安装的全部内容"
     print_line
     echo ""
-    echo "娉ㄦ剰锛氫粎鍗歌浇 realm/閰嶇疆/瀹氭椂浠诲姟/鍐呴儴琛紝涓嶄細鍗歌浇 curl銆乶ftables 绛夌郴缁熶緷璧栧寘銆�"
+    echo "注意：仅卸载 realm/配置/定时任务/内部表，不会卸载 curl、nftables 等系统依赖包。"
     echo ""
-    confirm_input "纭鍗歌浇鍏ㄩ儴鍐呭锛焄y/N/0杩斿洖锛屽洖杞﹂粯璁や笉鍗歌浇]: " CONFIRM_UNINSTALL
+    confirm_input "确认卸载全部内容？[y/N/0返回，回车默认不卸载]: " CONFIRM_UNINSTALL
 
     if [ "$CONFIRM_UNINSTALL" != "yes" ]; then
-        echo "宸插彇娑堝嵏杞姐€�"
+        echo "已取消卸载。"
         return 0
     fi
 
@@ -1867,36 +1867,36 @@ uninstall_all() {
     rm -f "$SHORTCUT_BIN"
 
     echo ""
-    echo "鉁� 鍗歌浇瀹屾垚锛佽剼鏈浉鍏虫湇鍔″拰閰嶇疆宸茶鍏ㄦ暟娓呴櫎銆�"
+    echo "✅ 卸载完成！脚本相关服务和配置已被全数清除。"
     echo ""
     exit 0
 }
 
 show_result() {
     echo ""
-    echo "[10/10] 瀹夎缁撴灉姹囨€�"
+    echo "[10/10] 安装结果汇总"
     echo "--------------------------------------"
-    echo "杞彂鏂瑰紡 锛�$MODE"
-    echo "鐩戝惉鍦板潃 锛�0.0.0.0:${LISTEN_PORT}"
-    echo "鐩爣鍦板潃 锛�${REMOTE_ADDR}"
-    echo "鍗忚     锛�$PROTO"
+    echo "转发方式 ：$MODE"
+    echo "监听地址 ：0.0.0.0:${LISTEN_PORT}"
+    echo "目标地址 ：${REMOTE_ADDR}"
+    echo "协议     ：$PROTO"
     echo "--------------------------------------"
     echo ""
 
     if [ "$MODE" = "realm" ]; then
-        echo "銆� realm 褰撳墠瑙勫垯 銆戯細"
+        echo "【 realm 当前规则 】："
         print_rule_file_numbered "$REALM_RULES"
         echo ""
     else
-        echo "銆� nftables 褰撳墠瑙勫垯 銆戯細"
+        echo "【 nftables 当前规则 】："
         print_rule_file_numbered "$NFT_RULES"
         echo ""
     fi
 
-    echo "銆� 娉ㄦ剰浜嬮」 銆戯細"
-    echo "1. 璇峰湪浜戞湇鍔″櫒瀹夊叏缁�/闃茬伀澧欎腑鏀捐鐩戝惉绔彛 [ ${LISTEN_PORT} ]"
-    echo "2. nftables 妯″紡涓嬶紝绔彛澶勪簬鍐呮牳 NAT 杞彂灞傜骇锛屼娇鐢� netstat 鎴� ss 灏嗘棤娉曟煡鐪嬪埌 LISTEN 鐘舵€侊紙杩欐槸姝ｅ父鐜拌薄锛�"
-    echo "3. 鏃ュ父绠＄悊鍙€氳繃鍦ㄧ粓绔洿鎺ヨ緭鍏ュ揩鎹峰懡浠わ細vfm 鎵撳紑鏈剼鏈�"
+    echo "【 注意事项 】："
+    echo "1. 请在云服务器安全组/防火墙中放行监听端口 [ ${LISTEN_PORT} ]"
+    echo "2. nftables 模式下，端口处于内核 NAT 转发层级，使用 netstat 或 ss 将无法查看到 LISTEN 状态（这是正常现象）"
+    echo "3. 日常管理可通过在终端直接输入快捷命令：vfm 打开本脚本"
     echo ""
 }
 
